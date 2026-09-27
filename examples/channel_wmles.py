@@ -58,14 +58,19 @@ def initial(xc):
 
 if __name__ == "__main__":
     nsteps = int(sys.argv[1]) if len(sys.argv) > 1 else 200
+    out_every = int(sys.argv[2]) if len(sys.argv) > 2 else 0     # 0 = no VTU output
     mesh, solver = build()
     Q = solver.init_state(initial)
     print(f"backend={'jax' if HAS_JAX else 'numpy'}  Ub={Ub:.1f} m/s  blocks={[b.n for b in mesh.blocks]}")
+    writer = None
     t = 0.0
     for it in range(1, nsteps + 1):
         dt = solver.max_dt(Q)
         Q = solver.advance(Q, dt)
         t += float(dt)
+        if out_every and it % out_every == 0:
+            from wmles.io_vtk import write_case
+            writer = write_case(mesh, solver, Q, it, t, "out/channel", writer=writer)
         if it % max(1, nsteps // 10) == 0 or it == 1:
             st = solver.wall_stats(Q)
             tau = np.mean([np.mean(v[0]) for v in st.values()])

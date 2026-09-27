@@ -11,9 +11,33 @@ wmles/
   schemes.py     KEP (order 2/4 split-form central), MUSCL-HLLC, Hybrid (Ducros switch)
   viscous.py     Green-Gauss gradients, compact-corrected face gradients, viscous fluxes
   solver.py      apply_bcs -> RHS -> SSP-RK3, CFL dt, constant-mass-flux constraint, wall stats
-examples/channel_wmles.py   Ma_b=0.3 channel, 2 blocks in x, wall-modelled walls
+  io_vtk.py      VTU/PVD export via pyvista (optional dependency, pip install pyvista)
+examples/channel_wmles.py   Ma_b=0.3 channel, 2 blocks in x, wall-modelled walls; 2nd CLI arg = VTU output stride
 tests/                      multiblock/orientation, free-stream, wall model, Sod tube
 ```
+
+## Visualization (pyvista, .vtu/.pvd)
+`pip install pyvista` (needs the `vtk` package too, which pyvista pulls in). Not required to
+run the solver -- only `wmles/io_vtk.py` imports it, and only when you call it.
+
+```python
+from wmles.io_vtk import write_case
+writer = None
+for it in range(nsteps):
+    ...
+    if it % 50 == 0:
+        writer = write_case(mesh, solver, Q, it, t, "out/channel", writer=writer)
+```
+This writes one hexahedral `.vtu` per block per output step (cell data: rho, velocity,
+pressure, temperature, Mach, mu_t, mu, vorticity magnitude, Q-criterion), a `.pvd`
+collection tying the whole run together as one time-aware object in ParaView, and, for
+every `WallModel` face, a 2D quad-mesh `.vtu` under `out/channel/wall/` with tau_w and q_w
+as cell data. `examples/channel_wmles.py N M` runs N steps and writes VTU every M steps.
+Lower-level building blocks (`block_grid`, `wall_patch_grid`, `derived_fields`) are there
+if you want a custom field list or your own output cadence/naming.
+The connectivity/index math (which node goes with which cell, field ordering) is unit-tested
+in the sandbox with a lightweight pyvista stub, since pyvista itself isn't installed there --
+worth a quick smoke test on your machine with the real package before a long run.
 
 ## Design
 * State: tuple of `(5, Ni, Nj, Nk)` arrays (one per block, ghosts included), `q = [rho, rho*u_vec, rho*E]`
