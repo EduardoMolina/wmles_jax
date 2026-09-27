@@ -1,0 +1,135 @@
+"""Consistency tests.  Run:  python -m tests.test_multiblock   (from the project root)
+   (set WMLES_BACKEND=numpy to force NumPy)"""
+import numpy as np
+from wmles import *
+from wmles.backend import xp
+
+L = (1.0, 0.6, 0.5)
+gas = Gas()
+
+
+def nodes_from_index(ix, iy, iz, n, skew=0.04):
+    """Skewed curvilinear (but periodic-compatible) nodes for global node indices."""
+    X, Y, Z = np.meshgrid(ix / n[0] * L[0], iy / n[1] * L[1], iz / n[2] * L[2], indexing="ij")
+    x = X + skew * np.sin(2 * np.pi * Y / L[1]) * np.sin(2 * np.pi * Z / L[2])
+    y = Y + skew * 0.5 * np.sin(2 * np.pi * X / L[0])
+    z = Z + skew * 0.5 * np.sin(2 * np.pi * X / L[0]) * np.cos(2 * np.pi * Y / L[1])
+    return np.stack([x, y, z])
+
+
+def prim_fn(xc):
+    x, y, z = xc
+    k = 2 * np.pi
+    rho = 1.2 * (1 + 0.05 * xp.sin(k * x / L[0]) * xp.cos(k * z / L[2]))
+    u = 60 * xp.sin(k * y / L[1]) + 20 * xp.cos(k * z / L[2])
+    v = 15 * xp.sin(k * x / L[0]) * xp.sin(k * z / L[2])
+    w = 10 * xp.cos(k * x / L[0]) + 5 * xp.sin(k * y / L[1])
+    p = 1e5 * (1 + 0.03 * xp.cos(k * x / L[0]) * xp.sin(k * y / L[1]))
+    return xp.stack([rho, u, v, w, p])
+
+
+def build(kind, n=(12, 10, 8), scheme=None, wm=False, periodic_y=False):
+    """kind: 'single' | 'split' | 'rot_cyc' | 'flip'.
+    x,z periodic; y = slip wall / wall-model (or periodic if periodic_y)."""
+    scheme = scheme or KEP(4)
+    ybc = (lambda: WallModel(EquilibriumWallModel(), T_wall=300.0)) if wm else SlipWall
+    ix, iy, iz = np.arange(n[0] + 1), np.arange(n[1] + 1), np.arange(n[2] + 1)
+    if kind == "single":
+        A = Block("all", nodes_from_index(ix, iy, iz, n))
+        blocks = [A]
+        m = Mesh(blocks)
+        m.connect(A, "imin", A, "imax", shift=(-L[0], 0, 0))
+        zpair = {A: ("kmin", "kmax")}
+        yfaces = {A: ("jmin", "jmax")}
+    else:
+        h = n[0] // 2
+        nodesA = nodes_from_index(ix[:h + 1], iy, iz, n)
+        nodesB = nodes_from_index(ix[h:], iy, iz, n)
+        if kind == "rot_cyc":      # (i,j,k)->(j,k,i): cyclic permutation, right-handed
+            nodesB = np.transpose(nodesB, (0, 2, 3, 1))
+        elif kind == "flip":       # 180 deg rotation about k: i and j reversed
+            nodesB = nodesB[:, ::-1, ::-1, :]
+        A, B = Block("A", nodesA), Block("B", nodesB)
+        blocks = [A, B]
+        m = Mesh(blocks)
+        # B's face names (x-min, x-max, z-min, z-max, y-min, y-max) depend on orientation
+        fx = {"split": ("imin", "imax"), "flip": ("imax", "imin"), "rot_cyc": ("kmin", "kmax")}[kind]
+        fz = {"split": ("kmin", "kmax"), "flip": ("kmin", "kmax"), "rot_cyc": ("jmin", "jmax")}[kind]
+        fy = {"split": ("jmin", "jmax"), "flip": ("jmax", "jmin"), "rot_cyc": ("imin", "imax")}[kind]
+        m.connect(A, "imax", B, fx[0])
+        m.connect(B, fx[1], A, "imin", shift=(L[0], 0, 0))
+        zpair = {A: ("kmin", "kmax"), B: fz}
+        yfaces = {A: ("jmin", "jmax"), B: fy}
+    for b in blocks:
+        m.connect(b, zpair[b][0], b, zpair[b][1], shift=(0, 0, -L[2]))
+        if periodic_y:
+            m.connect(b, yfaces[b][0], b, yfaces[b][1], shift=(0, -L[1], 0))
+        else:
+            for f in yfaces[b]:
+                b.set_bc(f, ybc())
+    m.finalize()
+    return m, Solver(m, gas, scheme, sgs="vreman", cfl=0.5)
+
+
+def gather(solver, R):
+    """interior rhs values keyed by rounded cell-centre coordinates"""
+    out = {}
+    for blk, r, g in zip(solver.blocks, R, solver.geoms):
+        xc = np.asarray(blk.interior(g.xc)).reshape(3, -1).T
+        rr = np.asarray(blk.interior(r)).reshape(5, -1).T
+        for c, v in zip(xc, rr):
+            out[tuple(np.round(c, 8))] = v
+    return out
+
+
+def compare(kind, scheme=None, wm=False):
+    m0, s0 = build("single", scheme=scheme, wm=wm)
+    m1, s1 = build(kind, scheme=scheme, wm=wm)
+    R0 = gather(s0, s0.rhs(s0.init_state(prim_fn)))
+    R1 = gather(s1, s1.rhs(s1.init_state(prim_fn)))
+    assert R0.keys() == R1.keys(), (len(R0), len(R1))
+    scale = np.max(np.abs(np.array(list(R0.values())))) 
+    err = max(np.max(np.abs(R0[k] - R1[k])) for k in R0) / scale
+    print(f"  {kind:8s} scheme={type(s0.scheme).__name__:10s} wm={wm!s:5s}  max rel diff vs single block = {err:.2e}")
+    return err
+
+
+def freestream():
+    prim = lambda xc: xp.stack([1.2 + 0 * xc[0], 50 + 0 * xc[0], -20 + 0 * xc[0], 30 + 0 * xc[0], 1e5 + 0 * xc[0]])
+    for sc in (KEP(2), KEP(4), MUSCLHLLC(), Hybrid()):
+        m, s = build("single", scheme=sc, periodic_y=True)
+        R = s.rhs(s.init_state(prim))
+        r = max(float(np.abs(np.asarray(m.blocks[0].interior(R[0]))[i]).max()) for i in range(5))
+        print(f"  freestream residual {type(sc).__name__:10s}: {r:.2e}  (round-off level; energy flux scale ~ 1e7)")
+        assert r < 1e-6 * 1e5
+
+
+def wall_model_selfconsistency():
+    wmod = EquilibriumWallModel()
+    kap, B = wmod.kappa, wmod.B
+    nu, ut, h = 1.5e-5, 2.0, 0.003
+    yp = h * ut / nu
+    # Spalding: y+ = u+ + e^{-kB}(e^{k u+} - 1 - k u+ - (k u+)^2/2 - (k u+)^3/6): invert with bisection
+    lo, hi = 1e-6, 60.0
+    f = lambda up: up + np.exp(-kap * B) * (np.exp(kap * up) - 1 - kap * up - (kap * up) ** 2 / 2 - (kap * up) ** 3 / 6) - yp
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if f(mid) < 0 else (lo, mid)
+    U = ut * 0.5 * (lo + hi)
+    rho = 1.2; mu = nu * rho
+    got = wmod.utau(xp.asarray([h]), xp.asarray([U]), xp.asarray([rho]), xp.asarray([mu]))
+    print(f"  Spalding inversion: u_tau true={ut:.6f}  recovered={float(got[0]):.6f}")
+    assert abs(float(got[0]) - ut) < 1e-6
+
+
+if __name__ == "__main__":
+    from wmles.backend import HAS_JAX
+    print("backend:", "jax" if HAS_JAX else "numpy")
+    print("wall model:"); wall_model_selfconsistency()
+    print("free-stream preservation on a skewed grid:"); freestream()
+    print("multiblock vs single block RHS:")
+    for kind in ("split", "flip", "rot_cyc"):
+        e = compare(kind); assert e < 1e-9, e
+    e = compare("split", scheme=Hybrid()); assert e < 1e-9
+    e = compare("split", wm=True); assert e < 1e-9
+    print("ALL PASSED")
