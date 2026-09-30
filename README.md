@@ -5,7 +5,7 @@ wmles/
   backend.py     JAX (float64) or NumPy fallback (WMLES_BACKEND=numpy) - same source for both
   gas.py         perfect gas + Sutherland; conservative <-> primitive
   mesh.py        Block, Mesh.connect (auto orientation + periodic shift), ghost exchange, metrics
-  bc.py          SlipWall, NoSlipWall, Dirichlet, Extrapolate, WallModel (flux-override BC)
+  bc.py          SlipWall, NoSlipWall, Dirichlet, CharacteristicFarfield, Extrapolate, WallModel
   wall_model.py  EquilibriumWallModel: Spalding (u_tau, Newton) + Kader (heat flux) / adiabatic recovery
   sgs.py         Smagorinsky, WALE, Vreman (or None = implicit LES)
   schemes.py     KEP (order 2/4 split-form central), MUSCL-HLLC, Hybrid (Ducros switch)
@@ -90,7 +90,7 @@ nmf  = read_nmf("nak_a_ff_500c_2zn_L5.nmf")
 nodes, nmf = respan(grid.nodes, nmf, ncells=8, length=0.1)         # 1 spanwise cell -> 8 cells, 0.1 c span
 mesh = build_mesh(nodes, nmf,
                   bc_map={"viscous_solid": lambda: WallModel(EquilibriumWallModel(), T_wall=None),
-                          "farfield_riem": Dirichlet(prim)},
+                          "farfield_riem": CharacteristicFarfield(prim)},
                   periodic=(("symmetry_y", 0),))                   # spanwise periodic
 print(describe(mesh))
 ```
@@ -128,8 +128,9 @@ print(describe(mesh))
   handles a block's own min/max faces only.
 * Points where 3 or 5 blocks meet (extraordinary vertices) and their diagonal ghost cells are not stress-tested;
   the stencils only use face neighbours and the L5 case (a valence-4 trailing-edge point) works.
-* `farfield_riem` is only a fixed free-stream Dirichlet placeholder for now (reflective); the TMBWG
-  grids are RANS-type (y+ ~ 1) so explicit dt is tiny - use a wall-modelled-LES grid for real runs.
+* `CharacteristicFarfield` retains outgoing linearized Euler characteristics and imposes incoming
+  characteristics from the supplied free stream. The TMBWG grids are RANS-type (y+ ~ 1) so explicit
+  dt is tiny - use a wall-modelled-LES grid for real runs.
 
 ## Design
 * State: tuple of `(5, Ni, Nj, Nk)` arrays (one per block, ghosts included), `q = [rho, rho*u_vec, rho*E]`

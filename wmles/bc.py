@@ -74,6 +74,44 @@ class Dirichlet(BC):
         return _fill_mirror(q, blk, geom, axis, side, fn)
 
 
+class CharacteristicFarfield(BC):
+    """Linearized characteristic far-field condition for primitive [rho,u,v,w,p]."""
+
+    def __init__(self, prim):
+        self.prim = np.asarray(prim, float)
+
+    def fill(self, q, blk, geom, gas, axis, side):
+        def fn(src, nrm, m):
+            w, T = gas.cons_to_prim(src)
+            w_inf = xp.asarray(self.prim).reshape((5,) + (1,) * (src.ndim - 1)) * xp.ones_like(src[:1])
+            rho_inf, u_inf, p_inf = w_inf[0], w_inf[1:4], w_inf[4]
+            c_inf = xp.sqrt(gas.gamma * p_inf / rho_inf)
+
+            n_out = nrm if side == 1 else -nrm
+            un = xp.sum(w[1:4] * n_out, axis=0)
+            un_inf = xp.sum(u_inf * n_out, axis=0)
+            c = gas.sound_speed(T)
+            drho, dp = w[0] - rho_inf, w[4] - p_inf
+            dun = un - un_inf
+
+            # Retain outgoing acoustic modes and impose incoming modes from infinity.
+            a_plus = xp.where(un + c > 0.0, dp + rho_inf * c_inf * dun, 0.0)
+            a_minus = xp.where(un - c > 0.0, dp - rho_inf * c_inf * dun, 0.0)
+            dp_bc = 0.5 * (a_plus + a_minus)
+            dun_bc = (a_plus - a_minus) / (2.0 * rho_inf * c_inf)
+
+            outgoing_convective = un > 0.0
+            entropy = xp.where(outgoing_convective, drho - dp / c_inf ** 2, 0.0)
+            du_t = w[1:4] - u_inf - dun * n_out
+            du_t = xp.where(outgoing_convective[None], du_t, 0.0)
+
+            rho_bc = rho_inf + dp_bc / c_inf ** 2 + entropy
+            u_bc = u_inf + dun_bc * n_out + du_t
+            p_bc = p_inf + dp_bc
+            return gas.prim_to_cons(xp.concatenate([rho_bc[None], u_bc, p_bc[None]], axis=0))
+        return _fill_mirror(q, blk, geom, axis, side, fn)
+
+
 class Extrapolate(BC):
     """Zero-gradient (supersonic outflow)."""
 

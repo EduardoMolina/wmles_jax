@@ -104,6 +104,30 @@ def freestream():
         assert r < 1e-6 * 1e5
 
 
+def characteristic_farfield():
+    m, s = build("single")
+    blk, geom = m.blocks[0], m.geoms[0]
+    ng, n = blk.ng, blk.n[1]
+    prim_inf = np.array([1.2, 10.0, 0.0, 0.0, 1e5])
+    bc = CharacteristicFarfield(prim_inf)
+
+    def state(prim):
+        field = xp.asarray(prim).reshape(5, 1, 1, 1) * xp.ones((1,) + blk.N)
+        return s.gas.prim_to_cons(field)
+
+    cases = [
+        (state([1.0, 0.0, 500.0, 0.0, 8e4]), 0, prim_inf),
+        (state([1.0, 0.0, 1000.0, 0.0, 8e4]), 1, [1.0, 0.0, 1000.0, 0.0, 8e4]),
+        (state(prim_inf), 0, prim_inf),
+        (state(prim_inf), 1, prim_inf),
+    ]
+    for q, side, expected in cases:
+        filled = bc.fill(q, blk, geom, s.gas, 1, side)
+        ghost_j = ng - 1 if side == 0 else ng + n
+        ghost = filled[:, ng, ghost_j, ng]
+        np.testing.assert_allclose(np.asarray(s.gas.cons_to_prim(ghost)[0]), expected, rtol=1e-12)
+
+
 def wall_model_selfconsistency():
     wmod = EquilibriumWallModel()
     kap, B = wmod.kappa, wmod.B
@@ -125,6 +149,7 @@ def wall_model_selfconsistency():
 if __name__ == "__main__":
     from wmles.backend import HAS_JAX
     print("backend:", "jax" if HAS_JAX else "numpy")
+    print("characteristic far-field:"); characteristic_farfield()
     print("wall model:"); wall_model_selfconsistency()
     print("free-stream preservation on a skewed grid:"); freestream()
     print("multiblock vs single block RHS:")
