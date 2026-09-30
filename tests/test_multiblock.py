@@ -2,7 +2,7 @@
    (set WMLES_BACKEND=numpy to force NumPy)"""
 import numpy as np
 from wmles import *
-from wmles.backend import xp
+from wmles.backend import DEVICE, HAS_JAX, device_info, xp
 
 L = (1.0, 0.6, 0.5)
 gas = Gas()
@@ -146,9 +146,18 @@ def wall_model_selfconsistency():
     assert abs(float(got[0]) - ut) < 1e-6
 
 
+def selected_device_placement():
+    mesh, solver = build("single", n=(4, 4, 4))
+    q = solver.init_state(prim_fn)[0]
+    if HAS_JAX:
+        assert mesh.geoms[0].vol.device == DEVICE
+        assert q.device == DEVICE
+    print("selected device:", device_info())
+
+
 if __name__ == "__main__":
-    from wmles.backend import HAS_JAX
     print("backend:", "jax" if HAS_JAX else "numpy")
+    selected_device_placement()
     print("characteristic far-field:"); characteristic_farfield()
     print("wall model:"); wall_model_selfconsistency()
     print("free-stream preservation on a skewed grid:"); freestream()

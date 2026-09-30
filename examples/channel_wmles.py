@@ -6,10 +6,11 @@ Domain  x in [0, 2 pi d] (2 blocks, periodic), y in [0, 2 d] (wall-modelled wall
 z in [0, pi d] (periodic).  Constant mass flux is enforced after every step.
 """
 import sys
+import time
 import numpy as np
 from wmles import (Gas, Block, Mesh, Solver, KEP, Hybrid, WallModel,
                    EquilibriumWallModel, ConstantMassFlux)
-from wmles.backend import xp, HAS_JAX
+from wmles.backend import xp, HAS_JAX, device_info
 
 gas = Gas()
 d = 0.01                                   # half height [m]
@@ -61,13 +62,20 @@ if __name__ == "__main__":
     out_every = int(sys.argv[2]) if len(sys.argv) > 2 else 0     # 0 = no VTU output
     mesh, solver = build()
     Q = solver.init_state(initial)
-    print(f"backend={'jax' if HAS_JAX else 'numpy'}  Ub={Ub:.1f} m/s  blocks={[b.n for b in mesh.blocks]}")
+    print(f"backend={'jax' if HAS_JAX else 'numpy'} device={device_info()}  Ub={Ub:.1f} m/s  "
+          f"blocks={[b.n for b in mesh.blocks]}")
     writer = None
     t = 0.0
+    step_times = []
     for it in range(1, nsteps + 1):
+        step_start = time.perf_counter()
         dt = solver.max_dt(Q)
         Q = solver.advance(Q, dt)
         t += float(dt)
+        if HAS_JAX:
+            for q in Q:
+                q.block_until_ready()
+        step_times.append(time.perf_counter() - step_start)
         if out_every and it % out_every == 0:
             from wmles.io_vtk import write_case
             writer = write_case(mesh, solver, Q, it, t, "out/channel", writer=writer)
@@ -80,3 +88,12 @@ if __name__ == "__main__":
                      for b, q, g in zip(mesh.blocks, Q, solver.geoms))
             print(f"it={it:5d} t={t:.3e} dt={float(dt):.2e} <tau_w>={tau:8.3f} Pa "
                   f"<q_w>={qw:9.1f} W/m2 rho_min={rmin:.4f} KE={ke:.4e}")
+    warm = step_times[1:]
+    cells = sum(np.prod(b.n) for b in mesh.blocks)
+    first_label = "compile+run" if HAS_JAX else "run"
+    if warm:
+        warm_mean = np.mean(warm)
+        print(f"step timing: first_{first_label}={step_times[0]:.4f}s  "
+              f"warm_mean={warm_mean:.4f}s/step  cells_per_second={cells / warm_mean:.3g}")
+    elif step_times:
+        print(f"step timing: first_{first_label}={step_times[0]:.4f}s  warm_mean=n/a")

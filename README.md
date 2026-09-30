@@ -2,7 +2,7 @@
 
 ```
 wmles/
-  backend.py     JAX (float64) or NumPy fallback (WMLES_BACKEND=numpy) - same source for both
+  backend.py     JAX (float64, selected device) or NumPy fallback (WMLES_BACKEND=numpy)
   gas.py         perfect gas + Sutherland; conservative <-> primitive
   mesh.py        Block, Mesh.connect (auto orientation + periodic shift), ghost exchange, metrics
   bc.py          SlipWall, NoSlipWall, Dirichlet, CharacteristicFarfield, Extrapolate, WallModel
@@ -16,7 +16,7 @@ wmles/
   plot3d.py      Plot3D multiblock reader/writer (formatted + unformatted, endianness/precision/iblank auto-detect)
   nmf.py         Neutral Map File parser, span re-discretization, topology builder with automatic block splitting
 examples/channel_wmles.py   Ma_b=0.3 channel, 2 blocks in x, wall-modelled walls; 2nd CLI arg = VTU output stride
-examples/re5200_channel.py  UMD Re_tau~5200 channel validation case driver (see below)
+examples/channel_ReTau5200.py  UMD Re_tau~5200 channel validation case driver (see below)
 examples/airfoil_p3d.py     load Plot3D + NMF airfoil grid, build mesh, optional short run / VTU output
 tests/data/                 NASA TMBWG airfoil near-wake grid L5 (nak_a_ff_500c_2zn_L5 .p3dfmt/.nmf)
 tests/                      multiblock/orientation, free-stream, wall model, Sod tube
@@ -48,16 +48,40 @@ by Lee & Moser (2015) with a compressible solver at bulk Mach 0.2:
   with `%`, columns `y/delta, y+, U, dU/dy, W, P` in wall units) is confirmed against the
   Re_tau=180 file at that URL, so the loader should read the 5200 file as-is.
 
-```
-python -m examples.re5200_channel [level 1-4] [ar 1|2] [nsteps] [n_warmup] [out_every]
-python -m examples.re5200_channel --tiny         # cheap CPU smoke test at a much lower Re
+```bash
+python -m examples.channel_ReTau5200 [level 1-4] [ar 1|2] [nsteps] [n_warmup] [out_every]
+python -m examples.channel_ReTau5200 --tiny         # cheap CPU smoke test at a much lower Re
 ```
 **Realistic cost note:** the real case (grid level 1 = 128x32x48 ~ 2e5 cells) needs on the
 order of 1e5 explicit substeps to flush several flow-throughs and gather converged
 statistics -- far too slow on the NumPy fallback used for testing here; this needs the
-JAX/GPU backend. I only ran the `--tiny` smoke test (reduced Re, 40 steps, NumPy) in the
-sandbox to confirm the case builds, runs, and the statistics/wall-unit pipeline works
-end-to-end; I have not validated actual Re_tau=5200 numbers against DNS.
+JAX backend. CPU/JAX integration checks are available, but GPU execution and actual
+Re_tau=5200 agreement with DNS have not been validated here.
+
+## JAX device selection
+JAX uses its default device when `WMLES_DEVICE` is unset or `auto`. Set it to `cpu` to
+force CPU execution, or `gpu` to require an available accelerator. The GPU setting fails
+at startup if JAX cannot initialize a GPU, preventing an unnoticed CPU fallback. Solver
+startup logs report the selected device. `WMLES_BACKEND=numpy` continues to force NumPy
+and cannot be combined with `WMLES_DEVICE=gpu`.
+
+Run the solver checks locally with JAX on CPU:
+
+```bash
+WMLES_DEVICE=cpu python -m tests.test_multiblock
+WMLES_DEVICE=cpu python -m tests.test_sod
+```
+
+On the provisioned offline Ubuntu host, first confirm its existing JAX installation can
+see the H200, then require GPU placement during checks and runs:
+
+```bash
+WMLES_DEVICE=gpu python -c 'import jax; print(jax.devices())'
+WMLES_DEVICE=gpu python -m tests.test_multiblock
+WMLES_DEVICE=gpu python -m tests.test_sod
+WMLES_DEVICE=gpu python -m examples.channel_wmles 1
+WMLES_DEVICE=gpu python -m examples.channel_ReTau5200 1 1 10 5 0
+```
 
 ## Visualization (pyvista, .vtu/.pvd)
 `pip install pyvista` (needs the `vtk` package too, which pyvista pulls in). Not required to
@@ -150,8 +174,8 @@ print(describe(mesh))
 * Free-stream preservation at round-off on a skewed grid (KEP2/4, MUSCL-HLLC, Hybrid).
 * Spalding solve recovers a prescribed u_tau; Sod tube plateau values match exact solution;
   channel run conserves mass to 1e-15 and holds the target mass flux.
-* **Not yet run under JAX/GPU** (no JAX in the sandbox): the code uses only jit-safe, functional array ops,
-  but expect to fix small things on first `jax.jit` run.
+* The multiblock solver checks run under JAX CPU; GPU execution remains to be verified on
+  the target H200 host.
 
 ## Known limitations / next steps
 * KEP is non-dissipative; for high-Re production runs add a small dissipation or entropy-stable flux.

@@ -19,7 +19,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from .backend import xp, set_at
+from .backend import xp, asarray, set_at
 
 FACE_NAMES = {"imin": (0, 0), "imax": (0, 1),
               "jmin": (1, 0), "jmax": (1, 1),
@@ -235,8 +235,8 @@ class Mesh:
             vol, xc, S, xf = compute_geometry(b.X)
             if vol.min() <= 0:
                 raise ValueError(f"block {b.name}: non-positive cell volume (left-handed or folded grid)")
-            b.geom = Geom(xp.asarray(vol), xp.asarray(xc),
-                          tuple(xp.asarray(s) for s in S), tuple(xp.asarray(x) for x in xf))
+            b.geom = Geom(asarray(vol), asarray(xc),
+                          tuple(asarray(s) for s in S), tuple(asarray(x) for x in xf))
             geoms.append(b.geom)
         self.geoms = tuple(geoms)
         return self

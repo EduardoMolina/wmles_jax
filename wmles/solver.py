@@ -6,7 +6,7 @@ are jit *arguments* instead of huge compile-time constants.
 """
 import numpy as np
 
-from .backend import xp, jit, set_at
+from .backend import xp, asarray, jit, set_at
 from .mesh import Interface, exchange, sl
 from .bc import WallModel
 from .sgs import make_sgs
@@ -49,7 +49,7 @@ class Solver:
     # ------------------------------------------------------------------ init
     def init_state(self, prim_fn):
         """prim_fn(xc) -> primitives [rho,u,v,w,p] (5, ...) evaluated at cell centres."""
-        return tuple(self.gas.prim_to_cons(xp.asarray(prim_fn(g.xc))) for g in self.geoms)
+        return tuple(self.gas.prim_to_cons(asarray(prim_fn(g.xc))) for g in self.geoms)
 
     # ------------------------------------------------------------------ ghost cells
     def apply_bcs(self, Q, geoms):
