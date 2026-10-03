@@ -7,6 +7,7 @@ https://tmbwg.github.io/turbmodels/airfoilwake500c_grids.html
 import os
 import tempfile
 import textwrap
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -85,6 +86,21 @@ def test_plot3d_2d():
         ext = extrude_2d(g.nodes, 5, 0.3)
         assert ext[0].shape == (3, ni, nj, 6) and np.isclose(ext[0][2].max(), 0.3)
     print("  2-D plot3d read + extrude_2d: ok")
+
+
+def test_nasa_plot3d_blocks_adapter():
+    coords = np.arange(24.0).reshape(2, 3, 4)
+    blocks = [SimpleNamespace(X=coords, Y=coords + 1, Z=coords + 2)]
+    nodes = plot3d_blocks_to_nodes(blocks)
+    assert len(nodes) == 1 and nodes[0].shape == (3, 2, 3, 4)
+    assert np.array_equal(nodes[0], np.stack((coords, coords + 1, coords + 2)))
+    try:
+        plot3d_blocks_to_nodes([SimpleNamespace(X=coords, Y=coords, Z=coords[:, :, :-1])])
+    except ValueError as exc:
+        assert "same 3-D shape" in str(exc)
+    else:
+        raise AssertionError("mismatched Plot3D coordinate shapes should fail")
+    print("  NASA Plot3D Block adapter: ok")
 
 
 # ----------------------------------------------------------------------------------- NMF text
@@ -238,6 +254,7 @@ if __name__ == "__main__":
     print("backend:", "jax" if HAS_JAX else "numpy")
     test_plot3d_roundtrip()
     test_plot3d_2d()
+    test_nasa_plot3d_blocks_adapter()
     test_nmf_parse()
     test_swap_and_reversed_ranges_vs_single_block()
     test_cascade_split()

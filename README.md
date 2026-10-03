@@ -107,6 +107,24 @@ in the sandbox with a lightweight pyvista stub, since pyvista itself isn't insta
 worth a quick smoke test on your machine with the real package before a long run.
 
 ## Plot3D + NMF multiblock meshes (airfoil grids)
+NASA's [`Plot3D_utilities`](https://github.com/nasa/Plot3D_utilities) reader can also feed
+its `Block` objects into this workflow (install it separately with `pip install plot3d`):
+
+```python
+from plot3d import read_plot3D
+from wmles import plot3d_blocks_to_nodes, read_nmf, respan, build_mesh
+
+blocks = read_plot3D("mesh.xyz")
+nodes = plot3d_blocks_to_nodes(blocks)  # Block.X/Y/Z -> (3, ni, nj, nk)
+nmf = read_nmf("mesh.nmf")
+nodes, nmf = respan(nodes, nmf, ncells=8, length=0.1)
+mesh = build_mesh(nodes, nmf)
+```
+
+The NASA package supplies grid coordinates; this solver still uses its NMF parser for
+boundary conditions and interface topology. Its own `write_plot3D` can write grids from
+the converted arrays by wrapping each array as a NASA `Block`.
+
 ```python
 from wmles import *
 grid = read_plot3d("nak_a_ff_500c_2zn_L5.p3dfmt")                 # Plot3DGrid(nodes, iblank, ...)

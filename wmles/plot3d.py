@@ -28,6 +28,17 @@ class Plot3DGrid:
     ndim: int = 3
 
 
+def plot3d_blocks_to_nodes(blocks):
+    """Convert NASA Plot3D_utilities ``Block`` objects to stacked WMLES node arrays."""
+    nodes = []
+    for i, block in enumerate(blocks, 1):
+        coords = [np.asarray(getattr(block, name)) for name in ("X", "Y", "Z")]
+        if any(coord.ndim != 3 for coord in coords) or not (coords[0].shape == coords[1].shape == coords[2].shape):
+            raise ValueError(f"Plot3D block {i}: X, Y, and Z must have the same 3-D shape")
+        nodes.append(np.stack(coords, axis=0))
+    return nodes
+
+
 def _is_ascii(raw):
     head = raw[:200]
     try:
