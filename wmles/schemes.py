@@ -49,7 +49,7 @@ def _minmod(a, b):
 
 def hllc(wl, wr, S, gamma):
     Sm = xp.sqrt(xp.sum(S * S, axis=0))
-    n = S / Sm
+    n = S / xp.where(Sm > 0.0, Sm, 1.0)
     rl, ul, pl = wl[0], wl[1:4], wl[4]
     rr, ur, pr = wr[0], wr[1:4], wr[4]
     unl, unr = xp.sum(ul * n, axis=0), xp.sum(ur * n, axis=0)

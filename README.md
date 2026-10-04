@@ -106,7 +106,22 @@ The connectivity/index math (which node goes with which cell, field ordering) is
 in the sandbox with a lightweight pyvista stub, since pyvista itself isn't installed there --
 worth a quick smoke test on your machine with the real package before a long run.
 
-## Plot3D + NMF multiblock meshes (airfoil grids)
+## Plot3D + NMF multiblock meshes (wing and airfoil grids)
+Run a 100-step inviscid ONERA M6 example from the bundled Plot3D/NMF mesh in the
+`pyvista` Conda environment. Reports density/pressure checks every 10 steps; override the
+step count with `--steps`:
+
+```bash
+WMLES_DEVICE=cpu conda run -n pyvista python -m examples.oneram6_euler --steps 100
+```
+
+Add `--writeVTK 10` to write a VTU snapshot every 10 steps and update
+`out/oneram6/oneram6.pvd` for ParaView:
+
+```bash
+WMLES_DEVICE=cpu conda run -n pyvista python -m examples.oneram6_euler --steps 100 --writeVTK 10
+```
+
 NASA's [`Plot3D_utilities`](https://github.com/nasa/Plot3D_utilities) reader can also feed
 its `Block` objects into this workflow (install it separately with `pip install plot3d`):
 

@@ -233,8 +233,9 @@ class Mesh:
         geoms = []
         for b in self.blocks:
             vol, xc, S, xf = compute_geometry(b.X)
-            if vol.min() <= 0:
-                raise ValueError(f"block {b.name}: non-positive cell volume (left-handed or folded grid)")
+            interior = vol[ng:ng + b.n[0], ng:ng + b.n[1], ng:ng + b.n[2]]
+            if not np.isfinite(vol).all() or np.any(vol == 0) or np.any(interior <= 0):
+                raise ValueError(f"block {b.name}: non-positive physical or degenerate ghost-cell volume")
             b.geom = Geom(asarray(vol), asarray(xc),
                           tuple(asarray(s) for s in S), tuple(asarray(x) for x in xf))
             geoms.append(b.geom)
