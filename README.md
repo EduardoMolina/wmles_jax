@@ -10,8 +10,9 @@ wmles/
   sgs.py         Smagorinsky, WALE, Vreman (or None = implicit LES)
   schemes.py     KEP (order 2/4 split-form central), MUSCL-HLLC, Hybrid (Ducros switch)
   viscous.py     Green-Gauss gradients, compact-corrected face gradients, viscous fluxes
-  solver.py      apply_bcs -> RHS -> SSP-RK3, CFL dt, constant-mass-flux constraint, wall stats
+  solver.py      apply_bcs -> RHS -> SSP-RK3, CFL dt, constant-mass-flux constraint, wall stats/loads
   io_vtk.py      VTU/PVD export via pyvista (optional dependency, pip install pyvista)
+  io_wall_loads.py CSV export of integrated wall forces and moments
   channel5200.py UMD wall-model validation case setup: grid table, flow properties, IC, plane/time stats
   plot3d.py      Plot3D multiblock reader/writer (formatted + unformatted, endianness/precision/iblank auto-detect)
   nmf.py         Neutral Map File parser, span re-discretization, topology builder with automatic block splitting
@@ -105,6 +106,20 @@ if you want a custom field list or your own output cadence/naming.
 The connectivity/index math (which node goes with which cell, field ordering) is unit-tested
 in the sandbox with a lightweight pyvista stub, since pyvista itself isn't installed there --
 worth a quick smoke test on your machine with the real package before a long run.
+
+Integrated fluid-on-wall forces and moments for `WallModel` faces can be written at selected
+steps independently of VTU output:
+
+```bash
+python -m examples.channel_wmles 200 0 --force_steps 100 \
+  --moment-center 0.01 0.02 0.0 --force-file out/channel_wall_loads.csv
+```
+
+`--force_steps` is a positive step number no greater than `N`.
+The CSV contains one row per wall face and a total row per selected step; forces are in N,
+moments in N m, and moments are taken about the supplied reference point (default origin).
+`Solver.wall_loads(Q, moment_center=...)` provides the same integrated values as
+`{(block, face): (force, moment)}` for Python callers.
 
 ## Plot3D + NMF multiblock meshes (airfoil grids)
 ```python

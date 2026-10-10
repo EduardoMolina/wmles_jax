@@ -1,11 +1,11 @@
 """Wall-modelled LES of a compressible turbulent channel (Ma_b ~ 0.3), two blocks in x.
 
-    python -m examples.channel_wmles [n_steps]
+    python -m examples.channel_wmles [n_steps] [vtu_every]
 
 Domain  x in [0, 2 pi d] (2 blocks, periodic), y in [0, 2 d] (wall-modelled walls),
 z in [0, pi d] (periodic).  Constant mass flux is enforced after every step.
 """
-import sys
+import argparse
 import time
 import numpy as np
 from wmles import (Gas, Block, Mesh, Solver, KEP, Hybrid, WallModel,
@@ -57,13 +57,43 @@ def initial(xc):
     return xp.stack([rho0 + 0 * x, u, v, w, p0 + 0 * x])
 
 
+def _parse_steps(value):
+    try:
+        steps = tuple(int(part) for part in value.split(","))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("steps must be comma-separated integers") from exc
+    if not steps or any(step <= 0 for step in steps):
+        raise argparse.ArgumentTypeError("steps must be positive integers")
+    if len(set(steps)) != len(steps):
+        raise argparse.ArgumentTypeError("steps must not contain duplicates")
+    return tuple(sorted(steps))
+
+
 if __name__ == "__main__":
-    nsteps = int(sys.argv[1]) if len(sys.argv) > 1 else 200
-    out_every = int(sys.argv[2]) if len(sys.argv) > 2 else 0     # 0 = no VTU output
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("n_steps", nargs="?", type=int, default=200)
+    parser.add_argument("vtu_steps", nargs="?", type=int, default=0,
+                        help="VTU output stride; 0 disables VTU output")
+    parser.add_argument("--force_steps", type=int, default=100,
+                        help="Step frequency to write wall loads")
+    parser.add_argument("--moment_center", type=float, nargs=3, default=(0.0, 0.0, 0.0),
+                        metavar=("X", "Y", "Z"), help="moment reference point in metres")
+    parser.add_argument("--force-file", default="out/channel_wall_loads.csv",
+                        help="CSV output path for wall loads")
+    args = parser.parse_args()
+    nsteps, vtusteps, forcesteps = args.n_steps, args.vtu_steps, args.force_steps
+    if nsteps < 1:
+        parser.error("n_steps must be positive")
+
     mesh, solver = build()
     Q = solver.init_state(initial)
     print(f"backend={'jax' if HAS_JAX else 'numpy'} device={device_info()}  Ub={Ub:.1f} m/s  "
           f"blocks={[b.n for b in mesh.blocks]}")
+    wall_writer = None
+    if args.force_steps:
+        from wmles.io_wall_loads import WallLoadCSVWriter
+        wall_writer = WallLoadCSVWriter(args.force_file, args.moment_center)
+
     writer = None
     t = 0.0
     step_times = []
@@ -76,9 +106,11 @@ if __name__ == "__main__":
             for q in Q:
                 q.block_until_ready()
         step_times.append(time.perf_counter() - step_start)
-        if out_every and it % out_every == 0:
+        if vtusteps and it % vtusteps == 0:
             from wmles.io_vtk import write_case
             writer = write_case(mesh, solver, Q, it, t, "out/channel", writer=writer)
+        if forcesteps and it % forcesteps == 0:
+            wall_writer.write(it, t, solver.wall_loads(Q, args.moment_center))
         if it % max(1, nsteps // 10) == 0 or it == 1:
             st = solver.wall_stats(Q)
             tau = np.mean([np.mean(v[0]) for v in st.values()])
