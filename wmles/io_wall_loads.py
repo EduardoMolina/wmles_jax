@@ -14,12 +14,18 @@ class WallLoadCSVWriter:
         "Fx_N", "Fy_N", "Fz_N", "Mx_Nm", "My_Nm", "Mz_Nm",
     )
 
-    def __init__(self, path, moment_center):
+    def __init__(self, path, moment_center, append=False):
         self.path = Path(path)
         self.moment_center = np.asarray(moment_center, dtype=float)
         if self.moment_center.shape != (3,) or not np.all(np.isfinite(self.moment_center)):
             raise ValueError("moment_center must contain three finite coordinates")
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if append and self.path.exists():
+            with self.path.open(newline="") as stream:
+                header = next(csv.reader(stream), None)
+            if header != list(self._header):
+                raise ValueError(f"{self.path}: existing wall-load CSV header does not match")
+            return
         with self.path.open("w", newline="") as stream:
             csv.writer(stream).writerow(self._header)
 

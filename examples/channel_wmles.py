@@ -6,6 +6,8 @@ Domain  x in [0, 2 pi d] (2 blocks, periodic), y in [0, 2 d] (wall-modelled wall
 z in [0, pi d] (periodic).  Constant mass flux is enforced after every step.
 """
 import argparse
+from pathlib import Path
+import re
 import time
 import numpy as np
 from wmles import (Gas, Block, Mesh, Solver, KEP, Hybrid, WallModel,
@@ -80,24 +82,44 @@ if __name__ == "__main__":
                         metavar=("X", "Y", "Z"), help="moment reference point in metres")
     parser.add_argument("--force-file", default="out/channel_wall_loads.csv",
                         help="CSV output path for wall loads")
+    parser.add_argument("--restart", help="restart from a saved .pvd collection or block .vtu")
     args = parser.parse_args()
     nsteps, vtusteps, forcesteps = args.n_steps, args.vtu_steps, args.force_steps
     if nsteps < 1:
         parser.error("n_steps must be positive")
 
     mesh, solver = build()
-    Q = solver.init_state(initial)
+    if args.restart:
+        from wmles.io_vtk import read_restart
+        Q, restart_step, t = read_restart(args.restart, solver)
+    else:
+        Q, restart_step, t = solver.init_state(initial), 0, 0.0
     print(f"backend={'jax' if HAS_JAX else 'numpy'} device={device_info()}  Ub={Ub:.1f} m/s  "
           f"blocks={[b.n for b in mesh.blocks]}")
     wall_writer = None
     if args.force_steps:
         from wmles.io_wall_loads import WallLoadCSVWriter
-        wall_writer = WallLoadCSVWriter(args.force_file, args.moment_center)
+        wall_writer = WallLoadCSVWriter(
+            args.force_file, args.moment_center, append=bool(args.restart)
+        )
+
+    output_dir, output_name, resume_output = "out/channel", "case", False
+    if args.restart:
+        restart_path = Path(args.restart)
+        match = re.fullmatch(r"(.+)_block\d+_\d+\.vtu", restart_path.name)
+        if restart_path.suffix.lower() == ".pvd":
+            output_dir, output_name, resume_output = str(restart_path.parent), restart_path.stem, True
+        elif match:
+            output_dir, output_name = str(restart_path.parent), match.group(1)
+            resume_output = (restart_path.parent / f"{output_name}.pvd").is_file()
 
     writer = None
-    t = 0.0
+    if vtusteps and resume_output:
+        from wmles.io_vtk import VTKWriter
+        writer = VTKWriter(output_dir, output_name, resume=True)
     step_times = []
-    for it in range(1, nsteps + 1):
+    for local_step in range(1, nsteps + 1):
+        it = restart_step + local_step
         step_start = time.perf_counter()
         dt = solver.max_dt(Q)
         Q = solver.advance(Q, dt)
@@ -108,10 +130,11 @@ if __name__ == "__main__":
         step_times.append(time.perf_counter() - step_start)
         if vtusteps and it % vtusteps == 0:
             from wmles.io_vtk import write_case
-            writer = write_case(mesh, solver, Q, it, t, "out/channel", writer=writer)
+            writer = write_case(mesh, solver, Q, it, t, output_dir,
+                                name=output_name, writer=writer)
         if forcesteps and it % forcesteps == 0:
             wall_writer.write(it, t, solver.wall_loads(Q, args.moment_center))
-        if it % max(1, nsteps // 10) == 0 or it == 1:
+        if local_step % max(1, nsteps // 10) == 0 or local_step == 1:
             st = solver.wall_stats(Q)
             tau = np.mean([np.mean(v[0]) for v in st.values()])
             qw = np.mean([np.mean(v[1]) for v in st.values()])

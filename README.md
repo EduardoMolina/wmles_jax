@@ -11,7 +11,7 @@ wmles/
   schemes.py     KEP (order 2/4 split-form central), MUSCL-HLLC, Hybrid (Ducros switch)
   viscous.py     Green-Gauss gradients, compact-corrected face gradients, viscous fluxes
   solver.py      apply_bcs -> RHS -> SSP-RK3, CFL dt, constant-mass-flux constraint, wall stats/loads
-  io_vtk.py      VTU/PVD export via pyvista (optional dependency, pip install pyvista)
+  io_vtk.py      VTU/PVD export and restart loading via pyvista (optional dependency)
   io_wall_loads.py CSV export of integrated wall forces and moments
   channel5200.py UMD wall-model validation case setup: grid table, flow properties, IC, plane/time stats
   plot3d.py      Plot3D multiblock reader/writer (formatted + unformatted, endianness/precision/iblank auto-detect)
@@ -106,6 +106,25 @@ if you want a custom field list or your own output cadence/naming.
 The connectivity/index math (which node goes with which cell, field ordering) is unit-tested
 in the sandbox with a lightweight pyvista stub, since pyvista itself isn't installed there --
 worth a quick smoke test on your machine with the real package before a long run.
+
+### Restarting from a VTU/PVD checkpoint
+
+`examples.channel_wmles` can continue from the latest checkpoint in a `.pvd` collection,
+or from one of its per-block `.vtu` files. Pass the number of additional steps to run as
+the first positional argument; step and simulation time continue from the saved checkpoint:
+
+```bash
+python -m examples.channel_wmles 200 50 --restart out/channel/case.pvd
+python -m examples.channel_wmles 200 50 \
+  --restart out/channel/case_block0_000100.vtu
+```
+
+When restarting, VTU output continues in the checkpoint's directory and appends to its PVD
+collection. If force output is enabled, rows append to the existing wall-load CSV after its
+header is checked. Restart loads all block files for the selected step and checks that their
+mesh and required primitive fields match the configured solver. New VTUs store the step and
+time as metadata; older files can be restarted from their PVD collection, which supplies the
+time metadata. PyVista is required to read or write VTU files.
 
 Integrated fluid-on-wall forces and moments for `WallModel` faces can be written at selected
 steps independently of VTU output:

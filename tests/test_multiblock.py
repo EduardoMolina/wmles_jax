@@ -197,6 +197,12 @@ def wall_load_integration():
             rows = list(csv.reader(stream))
         assert len(rows) == 4  # header, two wall faces, and total
         assert rows[-1][0:4] == ["7", "0.25", "TOTAL", "total"]
+        resumed_writer = WallLoadCSVWriter(path, center, append=True)
+        resumed_writer.write(8, 0.5, loads)
+        with open(path, newline="") as stream:
+            rows = list(csv.reader(stream))
+        assert len(rows) == 7
+        assert rows[-1][0:4] == ["8", "0.5", "TOTAL", "total"]
 
 
 if __name__ == "__main__":
