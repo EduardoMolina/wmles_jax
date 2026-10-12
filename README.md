@@ -42,17 +42,20 @@ by Lee & Moser (2015) with a compressible solver at bulk Mach 0.2:
 * `PlaneStats` accumulates plane- (x,z-) and time-averaged mean velocity, temperature and
   the resolved Reynolds stresses; `.wall_units(...)` rescales the lower half of the channel
   into `y+`, `U+` for comparison with a log law or DNS data.
-* `load_lm_profile(path)` reads a Lee & Moser `LM_Channel_*_mean_prof.txt` file if you
-  download your own copy (e.g. from https://turbulence.oden.utexas.edu/channel2015/ or
-  https://lee.me.uh.edu/) -- I could not fetch `LM_Channel_5200_mean_prof.txt` itself from
-  here to hard-code the reference numbers, but the file format (comment lines starting
-  with `%`, columns `y/delta, y+, U, dU/dy, W, P` in wall units) is confirmed against the
-  Re_tau=180 file at that URL, so the loader should read the 5200 file as-is.
+* `load_lm_profile(path)` reads a Lee & Moser mean profile. The Re_tau=5200 DNS reference
+  profiles are included in `tests/data/` as `LM_Channel_5200_mean_prof.dat` and
+  `LM_Channel_5200_vel_fluc_prof.dat`. Each run writes comparison profiles with the same
+  variables to `out/channel_ReTau5200/mean_profile.dat` and
+  `out/channel_ReTau5200/velocity_fluctuations.dat`.
 
 ```bash
 python -m examples.channel_ReTau5200 [level 1-4] [ar 1|2] [nsteps] [n_warmup] [out_every]
 python -m examples.channel_ReTau5200 --tiny         # cheap CPU smoke test at a much lower Re
 ```
+When `out_every` is positive, the driver writes VTU/PVD snapshots and a
+`forces_moments.csv` sample at that stride (plus the final step when it falls between
+strides). The CSV is still written at the final step when `out_every` is zero; zero
+disables VTU output.
 **Realistic cost note:** the real case (grid level 1 = 128x32x48 ~ 2e5 cells) needs on the
 order of 1e5 explicit substeps to flush several flow-throughs and gather converged
 statistics -- far too slow on the NumPy fallback used for testing here; this needs the
