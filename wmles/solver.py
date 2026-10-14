@@ -45,6 +45,7 @@ class Solver:
         self.sgs = make_sgs(sgs, **(sgs_kwargs or {}))
         self.constraints, self.sources, self.bc_passes = tuple(constraints), tuple(sources), bc_passes
         self._rhs_j, self._step_j, self._dt_j = jit(self._rhs), jit(self._step), jit(self._dt)
+        self._wall_stats_j = jit(self._wall_stats)
 
     # ------------------------------------------------------------------ init
     def init_state(self, prim_fn):
@@ -144,14 +145,20 @@ class Solver:
     # ------------------------------------------------------------------ diagnostics
     def wall_stats(self, Q):
         """{(block, face): (tau_w, q_w)} for all wall-modelled faces."""
-        Q = self.apply_bcs(Q, self.geoms)
+        return {
+            key: (np.asarray(tau), np.asarray(qw))
+            for key, (tau, qw) in self._wall_stats_j(Q, self.geoms).items()
+        }
+
+    def _wall_stats(self, Q, geoms):
+        Q = self.apply_bcs(Q, geoms)
         out = {}
-        for ib, (blk, q, g) in enumerate(zip(self.blocks, Q, self.geoms)):
+        for ib, (blk, q, g) in enumerate(zip(self.blocks, Q, geoms)):
             w, T = self.gas.cons_to_prim(q)
             for (a, s), bc in blk.faces.items():
                 if isinstance(bc, WallModel):
                     _, tau, qw = bc.wall_flux(w, T, blk, g, self.gas, a, s)
-                    out[(blk.name, "ijk"[a] + ("min", "max")[s])] = (np.asarray(tau), np.asarray(qw))
+                    out[(blk.name, "ijk"[a] + ("min", "max")[s])] = (tau, qw)
         return out
 
     def wall_loads(self, Q, moment_center=(0.0, 0.0, 0.0)):

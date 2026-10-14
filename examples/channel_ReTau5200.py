@@ -14,6 +14,8 @@ the official ASCII y-files could not be reached from this sandbox. A real Re_tau
 needs the JAX/GPU backend and is far too expensive for a quick check -- use `--tiny` (a small
 Re_tau to sanity-check the mechanics in seconds) if you just want to see the pipeline run.
 """
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -22,6 +24,17 @@ import numpy as np
 from wmles.backend import xp, HAS_JAX, device_info
 from wmles.channel5200 import (build_case, initial, flow_properties, PlaneStats,
                                RE_TAU_TARGET, H_WM_H)
+
+
+def process_rss_mib():
+    """Return this process's current resident set size in MiB."""
+    result = subprocess.run(
+        ("ps", "-o", "rss=", "-p", str(os.getpid())),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return int(result.stdout.strip()) / 1024.0
 
 
 def run(level, ar, nsteps, n_warmup, out_every, props=None):
@@ -37,7 +50,9 @@ def run(level, ar, nsteps, n_warmup, out_every, props=None):
          f"h={props['h']:.4e} m  Ub={props['Ub']:.2f} m/s  nu={props['nu0']:.3e} m2/s  "
          f"target Re_tau~{RE_TAU_TARGET:.0f} (u_tau_est={props['u_tau_est']:.3f} m/s)")
     t = 0.0
-    step_times = []
+    first_step_time = None
+    warm_step_time_sum = 0.0
+    warm_step_count = 0
     for it in range(1, nsteps + 1):
         step_start = time.perf_counter()
         dt = solver.max_dt(Q)
@@ -46,7 +61,12 @@ def run(level, ar, nsteps, n_warmup, out_every, props=None):
         if HAS_JAX:
             for q in Q:
                 q.block_until_ready()
-        step_times.append(time.perf_counter() - step_start)
+        step_time = time.perf_counter() - step_start
+        if it == 1:
+            first_step_time = step_time
+        else:
+            warm_step_time_sum += step_time
+            warm_step_count += 1
         if it > n_warmup:
             stats.accumulate(Q)
         if out_every > 0 and it % out_every == 0:
@@ -60,23 +80,24 @@ def run(level, ar, nsteps, n_warmup, out_every, props=None):
             tau_w = np.mean([np.mean(v[0]) for v in st.values()])
             u_tau = float(np.sqrt(tau_w / props["rho0"]))
             re_tau = u_tau * props["h"] / props["nu0"]
+            rss_mib = process_rss_mib()
             print(f"it={it:6d} t={t:.4e} dt={float(dt):.2e}  tau_w={tau_w:7.3f} Pa  "
-                 f"u_tau={u_tau:.4f}  Re_tau={re_tau:8.1f} (target {RE_TAU_TARGET:.0f})")
+                 f"u_tau={u_tau:.4f}  Re_tau={re_tau:8.1f} (target {RE_TAU_TARGET:.0f}, "
+                 f"RSS={rss_mib:.1f} MiB)")
     if nsteps > last_output_step:
         wall_writer.write(nsteps, t, solver.wall_loads(Q))
         if out_every > 0:
             from wmles.io_vtk import write_case
             vtu_writer = write_case(mesh, solver, Q, nsteps, t, outdir,
                                     name="channel_ReTau5200", writer=vtu_writer)
-    warm = step_times[1:]
     cells = sum(np.prod(b.n) for b in mesh.blocks)
     first_label = "compile+run" if HAS_JAX else "run"
-    if warm:
-        warm_mean = np.mean(warm)
-        print(f"step timing: first_{first_label}={step_times[0]:.4f}s  "
+    if warm_step_count:
+        warm_mean = warm_step_time_sum / warm_step_count
+        print(f"step timing: first_{first_label}={first_step_time:.4f}s  "
               f"warm_mean={warm_mean:.4f}s/step  cells_per_second={cells / warm_mean:.3g}")
-    elif step_times:
-        print(f"step timing: first_{first_label}={step_times[0]:.4f}s  warm_mean=n/a")
+    elif first_step_time is not None:
+        print(f"step timing: first_{first_label}={first_step_time:.4f}s  warm_mean=n/a")
     return mesh, solver, props, stats, t, Q
 
 
