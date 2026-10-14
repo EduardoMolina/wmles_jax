@@ -32,23 +32,37 @@ WMLES setup using the three `baurle2021wsm_grid6_*.txt` distributions in `tests/
 the streamwise spacing at the wall and the upstream/downstream wall-normal distributions.
 It maps the upstream wall at `y/L=0.22` smoothly to the downstream wall at `y/L=0`
 using the published quintic ramp, with the supplied `y/L=0.74` top boundary. The
-default domain is `x/L=-1..4`, the periodic span is `0.288L`, and the physical scale
+default domain is `x/L=-0.76..4`, the periodic span is `0.288L`, and the physical scale
 is set from `Re_L=667,000` and `Ma_inf=0.2`. The provided streamwise grid is extended
 outside `x/L=-0.05..1.05` using constant end spacing; the spanwise distribution is
 uniform because no spanwise grid file is included.
 
 The bottom wall uses the equilibrium wall model, the top uses slip, the span is periodic,
-and the outflow is characteristic. The inlet and initial state use a 1/7-power mean
-boundary-layer profile with `delta/L=0.028`. This is a runnable WMLES baseline, not a
-validation-quality reproduction: the site calls for turbulent inflow generation and
-provides DNS inflow profiles separately, while this repository has neither a synthetic
-turbulence generator nor those DNS profiles. The gas uses the project’s Sutherland
-viscosity model; the site notes constant viscosity is also reasonable at this low Mach.
+and the outflow is characteristic. The inlet and initial state use the supplied DNS
+profile at `x/L=-0.76` in `tests/data/smooth_ramp_dns/`. A deterministic Fourier-mode
+synthetic field applies the profile's `uu`, `vv`, `ww`, and `uv` stresses; its default
+correlation scales are `(0.1, 0.02, 0.03)L` in streamwise, wall-normal, and spanwise
+directions. Override these and the phase seed with `--inflow-scales LX LY LZ` and
+`--inflow-seed`. The DNS data contain only means and second moments, not time histories
+or correlation lengths, so this generator matches those local moments statistically;
+it cannot reproduce DNS temporal coherence. The missing `uw` and `vw` covariances are
+assumed zero.
+
+An optional-by-CLI sponge source is enabled by default over the last `1L` before
+outflow (or from `--sponge-start x/L`), with maximum rate `U_inf/L`. It smoothly damps
+departures from each instantaneous spanwise mean and therefore preserves that mean
+profile. Spanwise-uniform disturbances are intentionally left to the characteristic
+outflow condition. Use `--sponge-strength` to change the maximum rate or `--no-sponge`
+to disable it. Physical time is passed to inflow boundary fills at the SSP-RK stage
+times, keeping the generated field deterministic and JIT-compatible. The gas uses the
+project's Sutherland viscosity model; the site notes constant viscosity is also
+reasonable at this low Mach.
 
 ```bash
 python -m examples.smooth_ramp                         # build/report grid only
 python -m examples.smooth_ramp --steps 10 --nz 16     # short solver smoke run
 python -m examples.smooth_ramp --x-min -0.05 --x-max 1.05 --nz 4  # smaller setup check
+python -m examples.smooth_ramp --inflow-scales 0.1 0.02 0.03 --sponge-start 3.0
 python -m examples.smooth_ramp --steps 100 --vtu 20   # optional ParaView output
 ```
 

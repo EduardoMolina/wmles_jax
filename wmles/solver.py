@@ -52,7 +52,7 @@ class Solver:
         return tuple(self.gas.prim_to_cons(asarray(prim_fn(g.xc))) for g in self.geoms)
 
     # ------------------------------------------------------------------ ghost cells
-    def apply_bcs(self, Q, geoms):
+    def apply_bcs(self, Q, geoms, time=0.0):
         Q = list(Q)
         for _ in range(self.bc_passes):
             for a in range(3):
@@ -64,7 +64,7 @@ class Solver:
                             src = q if f.nb == ib else Q[f.nb]
                             q = exchange(q, src, blk, (a, s), self.blocks[f.nb], f, "cell")
                         else:
-                            q = f.fill(q, blk, geoms[ib], self.gas, a, s)
+                            q = f.fill_at_time(q, blk, geoms[ib], self.gas, a, s, time)
                     Q[ib] = q
         return tuple(Q)
 
@@ -90,8 +90,8 @@ class Solver:
             rhs = rhs - (F[sl(F.ndim, d, slice(1, None))] - F[sl(F.ndim, d, slice(None, -1))])
         return rhs / blk.interior(geom.vol)
 
-    def _rhs(self, Q, geoms):
-        Q = self.apply_bcs(Q, geoms)
+    def _rhs(self, Q, geoms, time=0.0):
+        Q = self.apply_bcs(Q, geoms, time)
         ng = self.mesh.ng
         out = []
         for ib, (q, g) in enumerate(zip(Q, geoms)):
@@ -102,21 +102,21 @@ class Solver:
         return tuple(out)
 
     # ------------------------------------------------------------------ time stepping
-    def _step(self, Q, geoms, dt):
+    def _step(self, Q, geoms, dt, time=0.0):
         ax = lambda a, x, b, y: tuple(a * u + b * v for u, v in zip(x, y))
-        R0 = self._rhs(Q, geoms)
+        R0 = self._rhs(Q, geoms, time)
         Q1 = ax(1.0, Q, dt, R0)
-        R1 = self._rhs(Q1, geoms)
+        R1 = self._rhs(Q1, geoms, time + dt)
         Q2 = ax(0.75, Q, 0.25, ax(1.0, Q1, dt, R1))
-        R2 = self._rhs(Q2, geoms)
+        R2 = self._rhs(Q2, geoms, time + 0.5 * dt)
         Q3 = ax(1.0 / 3.0, Q, 2.0 / 3.0, ax(1.0, Q2, dt, R2))
         for c in self.constraints:
             Q3 = c(Q3, geoms, self.blocks)
         return Q3
 
-    def _dt(self, Q, geoms):
+    def _dt(self, Q, geoms, time=0.0):
         gas = self.gas
-        Q = self.apply_bcs(Q, geoms)
+        Q = self.apply_bcs(Q, geoms, time)
         dts = []
         for blk, q, g in zip(self.blocks, Q, geoms):
             w, T = gas.cons_to_prim(q)
@@ -132,14 +132,14 @@ class Solver:
             dts.append(xp.min(blk.interior(self.cfl / ((lam + 4.0 * lamv) / g.vol))))
         return xp.min(xp.stack(dts))
 
-    def max_dt(self, Q):
-        return self._dt_j(Q, self.geoms)
+    def max_dt(self, Q, time=0.0):
+        return self._dt_j(Q, self.geoms, time)
 
-    def advance(self, Q, dt):
-        return self._step_j(Q, self.geoms, dt)
+    def advance(self, Q, dt, time=0.0):
+        return self._step_j(Q, self.geoms, dt, time)
 
-    def rhs(self, Q):
-        return self._rhs_j(Q, self.geoms)
+    def rhs(self, Q, time=0.0):
+        return self._rhs_j(Q, self.geoms, time)
 
     # ------------------------------------------------------------------ diagnostics
     def wall_stats(self, Q):

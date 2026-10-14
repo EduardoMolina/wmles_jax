@@ -3,7 +3,7 @@
     python -m examples.smooth_ramp --steps 10
     python -m examples.smooth_ramp --steps 10 --nz 8 --vtu 5
 
-The default mesh spans x/L=-1..4, uses the provided 120-cell wall-normal
+The default mesh spans x/L=-0.76..4, uses the provided 120-cell wall-normal
 distributions and a uniform 16-cell periodic span. A run with zero steps builds
 and reports the setup without advancing the solver.
 """
@@ -18,14 +18,32 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--steps", type=int, default=0)
     parser.add_argument("--nz", type=int, default=16, help="uniform spanwise cell count")
-    parser.add_argument("--x-min", type=float, default=-1.0, help="upstream extent in x/L")
+    parser.add_argument("--x-min", type=float, default=-0.76, help="upstream extent in x/L")
     parser.add_argument("--x-max", type=float, default=4.0, help="downstream extent in x/L")
+    parser.add_argument("--inflow-scales", type=float, nargs=3, default=(0.1, 0.02, 0.03),
+                        metavar=("LX", "LY", "LZ"),
+                        help="synthetic inflow correlation scales in units of L")
+    parser.add_argument("--inflow-seed", type=int, default=0)
+    parser.add_argument("--sponge-start", type=float, default=None,
+                        help="sponge start in x/L (default: x-max minus 1)")
+    parser.add_argument("--sponge-strength", type=float, default=1.0,
+                        help="maximum sponge rate in units of U_inf/L")
+    parser.add_argument("--no-sponge", action="store_true", help="disable the outflow sponge")
     parser.add_argument("--vtu", type=int, default=0, help="write VTU every N steps (needs pyvista)")
     args = parser.parse_args()
-    if args.steps < 0 or args.vtu < 0:
-        parser.error("--steps and --vtu must be non-negative")
+    if args.steps < 0 or args.vtu < 0 or args.sponge_strength < 0.0:
+        parser.error("--steps, --vtu, and --sponge-strength must be non-negative")
 
-    mesh, solver, props = build_case(x_min=args.x_min, x_max=args.x_max, nz=args.nz)
+    mesh, solver, props = build_case(
+        x_min=args.x_min,
+        x_max=args.x_max,
+        nz=args.nz,
+        inflow_scales=args.inflow_scales,
+        inflow_seed=args.inflow_seed,
+        sponge=not args.no_sponge,
+        sponge_start=args.sponge_start,
+        sponge_strength=args.sponge_strength,
+    )
     blk = mesh.blocks[0]
     print(f"backend={'jax' if HAS_JAX else 'numpy'} device={device_info()}  "
           f"cells={blk.n}  L={props['L']:.5g} m  U_inf={props['U_inf']:.3f} m/s  "
@@ -36,12 +54,13 @@ def main():
     if args.steps == 0:
         return
 
-    Q = solver.init_state(lambda xc: initial(xc, props))
+    inflow = blk.faces[(0, 0)]
+    Q = solver.init_state(lambda xc: initial(xc, props, inflow.profile))
     t, writer = 0.0, None
     for it in range(1, args.steps + 1):
         start = time.perf_counter()
-        dt = solver.max_dt(Q)
-        Q = solver.advance(Q, dt)
+        dt = solver.max_dt(Q, t)
+        Q = solver.advance(Q, dt, t)
         t += float(dt)
         if HAS_JAX:
             for q in Q:

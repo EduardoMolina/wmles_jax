@@ -31,6 +31,9 @@ class BC:
     def fill(self, q, blk, geom, gas, axis, side):
         raise NotImplementedError
 
+    def fill_at_time(self, q, blk, geom, gas, axis, side, time):
+        return self.fill(q, blk, geom, gas, axis, side)
+
 
 class SlipWall(BC):
     """Symmetry / inviscid wall: reflect the normal velocity."""
