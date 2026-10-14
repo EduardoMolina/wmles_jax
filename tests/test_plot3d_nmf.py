@@ -12,6 +12,7 @@ import numpy as np
 
 from wmles import *
 from wmles.backend import xp
+from wmles.io_vtk import HAS_PYVISTA, VTKWriter, read_restart, write_case
 from wmles.mesh import sl
 from tests.test_multiblock import nodes_from_index, prim_fn, gather, L
 
@@ -85,6 +86,47 @@ def test_plot3d_2d():
         ext = extrude_2d(g.nodes, 5, 0.3)
         assert ext[0].shape == (3, ni, nj, 6) and np.isclose(ext[0][2].max(), 0.3)
     print("  2-D plot3d read + extrude_2d: ok")
+
+
+def test_vtu_restart_roundtrip():
+    if not HAS_PYVISTA:
+        print("  VTU restart: skipped (pyvista is not installed)")
+        return
+
+    coordinates = np.linspace(0.0, 1.0, 5)
+    nodes = np.stack(np.meshgrid(coordinates, coordinates, coordinates, indexing="ij"))
+    block = Block("restart", nodes)
+    mesh = Mesh([block])
+    for face in ("imin", "imax", "jmin", "jmax", "kmin", "kmax"):
+        block.set_bc(face, SlipWall())
+    mesh.finalize()
+    solver = Solver(mesh, gas, KEP(2), sgs=None)
+
+    def initial_restart_state(xc):
+        x, y, z = xc
+        return xp.stack([
+            1.2 + 0.05 * x,
+            20.0 + 2.0 * y,
+            3.0 + 0.5 * z,
+            1.0 + 0 * x,
+            1e5 + 100.0 * x,
+        ])
+
+    Q = solver.init_state(initial_restart_state)
+    with tempfile.TemporaryDirectory() as outdir:
+        writer = write_case(mesh, solver, Q, 12, 0.125, outdir, wall=False)
+        vtu_path = os.path.join(outdir, "case_block0_000012.vtu")
+        loaded, step, time = read_restart(vtu_path, solver)
+        assert step == 12 and time == 0.125
+        np.testing.assert_allclose(block.interior(loaded[0]), block.interior(Q[0]), rtol=1e-13)
+
+        resumed = VTKWriter(outdir, "case", resume=True)
+        assert len(resumed.entries) == len(writer.entries)
+        resumed.write_step(mesh, solver, Q, 13, 0.25)
+        loaded, step, time = read_restart(os.path.join(outdir, "case.pvd"), solver)
+        assert step == 13 and time == 0.25
+        np.testing.assert_allclose(block.interior(loaded[0]), block.interior(Q[0]), rtol=1e-13)
+    print("  VTU/PVD restart round trip (state, step, time, append): ok")
 
 
 # ----------------------------------------------------------------------------------- NMF text
@@ -238,6 +280,7 @@ if __name__ == "__main__":
     print("backend:", "jax" if HAS_JAX else "numpy")
     test_plot3d_roundtrip()
     test_plot3d_2d()
+    test_vtu_restart_roundtrip()
     test_nmf_parse()
     test_swap_and_reversed_ranges_vs_single_block()
     test_cascade_split()

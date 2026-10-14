@@ -127,14 +127,16 @@ class PlaneStats:
         blk, geom = mesh.blocks[0], solver.geoms[0]
         self.y = np.asarray(blk.interior(geom.xc[1]))[0, :, 0]
         self.n = 0
+        self.tau_w_sum = 0.0
         self.sum = {k: np.zeros_like(self.y) for k in
-                   ("rho", "u", "v", "w", "uu", "vv", "ww", "uv", "T")}
+                    ("rho", "u", "v", "w", "uu", "vv", "ww", "uv", "uw", "vw", "T", "p")}
 
     def accumulate(self, Q):
         blk, gas = self.mesh.blocks[0], self.solver.gas
         w, T = gas.cons_to_prim(Q[0])
         u, v, wc = (np.asarray(blk.interior(c)) for c in w[1:4])
         rho, Ta = np.asarray(blk.interior(w[0])), np.asarray(blk.interior(T))
+        p = np.asarray(blk.interior(w[4]))
         ax = (0, 2)
         self.sum["rho"] += rho.mean(axis=ax)
         self.sum["u"] += u.mean(axis=ax)
@@ -144,7 +146,12 @@ class PlaneStats:
         self.sum["vv"] += (v * v).mean(axis=ax)
         self.sum["ww"] += (wc * wc).mean(axis=ax)
         self.sum["uv"] += (u * v).mean(axis=ax)
+        self.sum["uw"] += (u * wc).mean(axis=ax)
+        self.sum["vw"] += (v * wc).mean(axis=ax)
         self.sum["T"] += Ta.mean(axis=ax)
+        self.sum["p"] += p.mean(axis=ax)
+        wall_stats = self.solver.wall_stats(Q)
+        self.tau_w_sum += np.mean([np.mean(v[0]) for v in wall_stats.values()])
         self.n += 1
 
     def result(self):
@@ -154,18 +161,41 @@ class PlaneStats:
         avg["vv"] -= avg["v"] ** 2
         avg["ww"] -= avg["w"] ** 2
         avg["uv"] -= avg["u"] * avg["v"]
+        avg["uw"] -= avg["u"] * avg["w"]
+        avg["vw"] -= avg["v"] * avg["w"]
         return self.y, avg
 
+    @property
+    def mean_tau_w(self):
+        """Mean wall shear stress over the samples accumulated by this object."""
+        assert self.n > 0, "call accumulate() at least once before mean_tau_w"
+        return self.tau_w_sum / self.n
+
     def wall_units(self, tau_w, rho_w, mu_w, h):
-        """Inner-scaled profile for the lower half of the channel: y+, U+, u_i u_j+."""
+        """Inner-scaled lower-half profiles using the DNS channel-profile variables."""
         y, avg = self.result()
         u_tau = np.sqrt(tau_w / rho_w)
         nu_w = mu_w / rho_w
-        mask = y <= h
-        yp = y[mask] * u_tau / nu_w
-        out = {"y+": yp, "U+": avg["u"][mask] / u_tau,
-               "uu+": avg["uu"][mask] / u_tau ** 2, "vv+": avg["vv"][mask] / u_tau ** 2,
-               "ww+": avg["ww"][mask] / u_tau ** 2, "uv+": avg["uv"][mask] / u_tau ** 2}
+        mask = y < h
+        y, yp = y[mask], y[mask] * u_tau / nu_w
+        u_plus = avg["u"][mask] / u_tau
+        p = avg["p"][mask]
+        p_wall = p[0] - y[0] * (p[1] - p[0]) / (y[1] - y[0])
+        out = {
+            "y/delta": y / h,
+            "y+": yp,
+            "U+": u_plus,
+            "dU/dy+": np.gradient(u_plus, yp),
+            "W+": avg["w"][mask] / u_tau,
+            "P+": (p - p_wall) / (rho_w * u_tau ** 2),
+            "uu+": avg["uu"][mask] / u_tau ** 2,
+            "vv+": avg["vv"][mask] / u_tau ** 2,
+            "ww+": avg["ww"][mask] / u_tau ** 2,
+            "uv+": avg["uv"][mask] / u_tau ** 2,
+            "uw+": avg["uw"][mask] / u_tau ** 2,
+            "vw+": avg["vw"][mask] / u_tau ** 2,
+        }
+        out["k+"] = 0.5 * (out["uu+"] + out["vv+"] + out["ww+"])
         return u_tau, out
 
 

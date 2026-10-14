@@ -153,3 +153,56 @@ class Solver:
                     _, tau, qw = bc.wall_flux(w, T, blk, g, self.gas, a, s)
                     out[(blk.name, "ijk"[a] + ("min", "max")[s])] = (np.asarray(tau), np.asarray(qw))
         return out
+
+    def wall_loads(self, Q, moment_center=(0.0, 0.0, 0.0)):
+        """Integrate fluid-on-wall force and moment for each WallModel face.
+
+        Returns ``{(block, face): (force, moment)}``, with Cartesian force in N
+        and moment in N m. Moments are taken about ``moment_center``.
+        """
+        center = np.asarray(moment_center, dtype=float)
+        if center.shape != (3,) or not np.all(np.isfinite(center)):
+            raise ValueError("moment_center must contain three finite coordinates")
+
+        Q = self.apply_bcs(Q, self.geoms)
+        out = {}
+        for blk, q, g in zip(self.blocks, Q, self.geoms):
+            w, T = self.gas.cons_to_prim(q)
+            for (axis, side), bc in blk.faces.items():
+                if not isinstance(bc, WallModel):
+                    continue
+
+                ng, n = blk.ng, blk.n[axis]
+                face_index = ng if side == 0 else ng + n
+                match_index = ng + bc.n_match - 1 if side == 0 else ng + n - bc.n_match
+                cell_index = ng if side == 0 else ng + n - 1
+
+                area_vector = blk.take(g.S[axis], axis, face_index)
+                area = xp.sqrt(xp.sum(area_vector * area_vector, axis=0))
+                normal = area_vector / area
+                if side == 0:
+                    normal = -normal
+
+                velocity = blk.take(w[1:4], axis, match_index)
+                tangential_velocity = velocity - xp.sum(
+                    velocity * normal, axis=0
+                )[None] * normal
+                speed = xp.sqrt(xp.sum(tangential_velocity ** 2, axis=0) + 1e-20)
+                tangent = tangential_velocity / speed
+                _, tau, _ = bc.wall_flux(w, T, blk, g, self.gas, axis, side)
+                wall_pressure = blk.take(w[4], axis, cell_index)
+                traction = (wall_pressure[None] * normal + tau[None] * tangent) * area[None]
+
+                face_center = blk.take(g.xf[axis], axis, face_index)
+                arm = face_center - center.reshape((3,) + (1,) * (face_center.ndim - 1))
+                moment_density = xp.stack([
+                    arm[1] * traction[2] - arm[2] * traction[1],
+                    arm[2] * traction[0] - arm[0] * traction[2],
+                    arm[0] * traction[1] - arm[1] * traction[0],
+                ])
+                tangential_axes = tuple(range(1, traction.ndim))
+                force = xp.sum(traction, axis=tangential_axes)
+                moment = xp.sum(moment_density, axis=tangential_axes)
+                face = "ijk"[axis] + ("min", "max")[side]
+                out[(blk.name, face)] = (np.asarray(force), np.asarray(moment))
+        return out
