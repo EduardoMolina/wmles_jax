@@ -1,12 +1,12 @@
 """UMD wall-model validation case: compressible WMLES channel at Re_tau ~ 5200.
     https://wmles.umd.edu/validation/channel-flow-at-re5200/
 
-    python -m examples.re5200_channel [level 1-4] [ar 1|2] [nsteps] [n_warmup] [out_every]
+    python -m examples.channel_ReTau5200 [level 1-4] [ar 1|2] [nsteps] [n_warmup] [out_every]
 
 Prints the running friction Reynolds number (target ~5200) and, at the end, writes the
-time- and plane-averaged U+ vs y+ (and Reynolds stresses) to <outdir>/profile.txt next to
-the log-law, so you can compare against your own copy of the Lee & Moser (2015) DNS profile
-with `wmles.channel5200.load_lm_profile`.
+time- and plane-averaged mean and velocity-fluctuation profiles to
+`out/channel_ReTau5200/`, using the same variables as the included Lee & Moser (2015)
+DNS profiles. A positive `out_every` also writes VTU/PVD snapshots and a forces/moments CSV.
 
 NOTE: this reproduces the UMD grids' node counts and Delta x = Delta z spacing exactly; the
 wall-normal distribution is an engineering approximation (see channel5200.py docstring) since
@@ -16,6 +16,7 @@ Re_tau to sanity-check the mechanics in seconds) if you just want to see the pip
 """
 import sys
 import time
+from pathlib import Path
 import numpy as np
 
 from wmles.backend import xp, HAS_JAX, device_info
@@ -27,6 +28,11 @@ def run(level, ar, nsteps, n_warmup, out_every, props=None):
     mesh, solver, props = build_case(level=level, ar=ar, props=props)
     Q = solver.init_state(lambda xc: initial(xc, props))
     stats = PlaneStats(mesh, solver)
+    outdir = Path("out/channel_ReTau5200")
+    from wmles.io_wall_loads import WallLoadCSVWriter
+    wall_writer = WallLoadCSVWriter(outdir / "forces_moments.csv", (0.0, 0.0, 0.0))
+    vtu_writer = None
+    last_output_step = 0
     print(f"backend={'jax' if HAS_JAX else 'numpy'} device={device_info()}  grid={mesh.blocks[0].n}  "
          f"h={props['h']:.4e} m  Ub={props['Ub']:.2f} m/s  nu={props['nu0']:.3e} m2/s  "
          f"target Re_tau~{RE_TAU_TARGET:.0f} (u_tau_est={props['u_tau_est']:.3f} m/s)")
@@ -43,6 +49,12 @@ def run(level, ar, nsteps, n_warmup, out_every, props=None):
         step_times.append(time.perf_counter() - step_start)
         if it > n_warmup:
             stats.accumulate(Q)
+        if out_every > 0 and it % out_every == 0:
+            from wmles.io_vtk import write_case
+            vtu_writer = write_case(mesh, solver, Q, it, t, outdir,
+                                    name="channel_ReTau5200", writer=vtu_writer)
+            wall_writer.write(it, t, solver.wall_loads(Q))
+            last_output_step = it
         if it % max(1, nsteps // 20) == 0 or it == 1:
             st = solver.wall_stats(Q)
             tau_w = np.mean([np.mean(v[0]) for v in st.values()])
@@ -50,6 +62,12 @@ def run(level, ar, nsteps, n_warmup, out_every, props=None):
             re_tau = u_tau * props["h"] / props["nu0"]
             print(f"it={it:6d} t={t:.4e} dt={float(dt):.2e}  tau_w={tau_w:7.3f} Pa  "
                  f"u_tau={u_tau:.4f}  Re_tau={re_tau:8.1f} (target {RE_TAU_TARGET:.0f})")
+    if nsteps > last_output_step:
+        wall_writer.write(nsteps, t, solver.wall_loads(Q))
+        if out_every > 0:
+            from wmles.io_vtk import write_case
+            vtu_writer = write_case(mesh, solver, Q, nsteps, t, outdir,
+                                    name="channel_ReTau5200", writer=vtu_writer)
     warm = step_times[1:]
     cells = sum(np.prod(b.n) for b in mesh.blocks)
     first_label = "compile+run" if HAS_JAX else "run"
@@ -79,11 +97,26 @@ if __name__ == "__main__":
         props = flow_properties(Ma_b=0.2, Re_b=4_000.0)
 
     mesh, solver, props, stats, t, Q = run(level, ar, nsteps, n_warmup, out_every, props=props)
-
     if stats.n > 0:
         y, avg = stats.result()
-        tau_w = np.mean([np.mean(v[0]) for v in solver.wall_stats(Q).values()])
-        u_tau, wu = stats.wall_units(tau_w, props["rho0"], props["mu0"], props["h"])
+        u_tau, wu = stats.wall_units(
+            stats.mean_tau_w, props["rho0"], props["mu0"], props["h"]
+        )
+        outdir = Path("out/channel_ReTau5200")
+        mean_columns = ("y/delta", "y+", "U+", "dU/dy+", "W+", "P+")
+        fluctuation_columns = ("y/delta", "y+", "uu+", "vv+", "ww+", "uv+", "uw+", "vw+", "k+")
+        np.savetxt(
+            outdir / "mean_profile.dat",
+            np.column_stack([wu[key] for key in mean_columns]),
+            header="y/delta  y+  U+  dU/dy+  W+  P+",
+            comments="% ",
+        )
+        np.savetxt(
+            outdir / "velocity_fluctuations.dat",
+            np.column_stack([wu[key] for key in fluctuation_columns]),
+            header="y/delta  y+  u'u'  v'v'  w'w'  u'v'  u'w'  v'w'  k",
+            comments="% ",
+        )
         print(f"\ncollected {stats.n} samples over the last "
              f"{nsteps - n_warmup} steps ({t:.3e} s of the run)")
         print(f"{'y/h':>8s} {'U (m/s)':>10s} {'u_rms':>8s} {'v_rms':>8s} {'w_rms':>8s} {'-uv':>10s}")
