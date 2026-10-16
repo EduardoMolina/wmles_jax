@@ -93,8 +93,12 @@ by Lee & Moser (2015) with a compressible solver at bulk Mach 0.2:
 
 ```bash
 python -m examples.channel_ReTau5200 [level 1-4] [ar 1|2] [nsteps] [n_warmup] [out_every]
+python -m examples.channel_ReTau5200 --scheme kep2 --n-match 2
 python -m examples.channel_ReTau5200 --tiny         # cheap CPU smoke test at a much lower Re
 ```
+Choose `--scheme hybrid` (default), `kep2`, `kep4`, or `muscl-hllc`. `--n-match`
+selects the wall-normal cell sampled by the wall model, counted from each wall
+(default: first cell centre, `1`).
 When `out_every` is positive, the driver writes VTU/PVD snapshots and a
 `forces_moments.csv` sample at that stride (plus the final step when it falls between
 strides). The CSV is still written at the final step when `out_every` is zero; zero
@@ -264,3 +268,8 @@ print(describe(mesh))
 * Only Cartesian-orientation matching interfaces (conforming, 1:1 nodes); no rotational periodicity / hanging nodes.
 * Ideas: TBLE/ODE wall model, dynamic Smagorinsky, WENO5, `jax.pmap`/`shard_map` over blocks, checkpointing (orbax),
   differentiable wall model calibration (everything is JAX-differentiable except the fori_loop Newton safeguards).
+
+## Developer
+```bash
+JAX_LOG_COMPILES=1  python -m examples.channel_ReTau5200
+```
