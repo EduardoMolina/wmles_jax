@@ -66,6 +66,40 @@ python -m examples.smooth_ramp --inflow-scales 0.1 0.02 0.03 --sponge-start 3.0
 python -m examples.smooth_ramp --steps 100 --vtu 20   # optional ParaView output
 ```
 
+## A-airfoil grid
+`wmles/airfoil_grid.py` generates a four-block Plot3D or VTK mesh from the
+provided A-airfoil contour in `tests/data/a-airfoil.dat`. The default periodic
+span is `0.20c`, with 20 uniformly spaced spanwise cells (`Delta z = 0.01c`).
+The span is deliberately an integer multiple of the requested spacing so every
+spanwise cell has the same width.
+
+```bash
+python -m wmles.airfoil_grid out/a_airfoil.p3d
+python -m wmles.airfoil_grid out/a_airfoil.vtm
+python -m wmles.airfoil_grid out/a_airfoil.p3d --span-length 0.24 --spanwise-spacing 0.01
+```
+
+`wmles/airfoil_case.py` sets up the published A-airfoil reference conditions
+from the [Tamaki-Kawai database README](https://www.klab.mech.tohoku.ac.jp/database/2022TamakiAIAAJ/README.txt):
+Mach 0.15, `Re_c = 1.0e7`, and 13.3-degree incidence. It applies a characteristic
+far-field, spanwise periodicity, and an adiabatic equilibrium wall model on the airfoil.
+Because the database README does not specify dimensional pressure or temperature,
+the default SI scale assumes standard ambient air at 300 K and 101325 Pa; override
+these using `--temperature` and `--pressure`. The adiabatic wall treatment is a
+WMLES modeling assumption, not a thermal condition stated in the database README.
+
+```bash
+python -m examples.airfoil_wmles out/a_airfoil.p3d          # assemble/report setup
+python -m examples.airfoil_wmles out/a_airfoil.p3d --steps 10
+python -m examples.airfoil_wmles out/a_airfoil.p3d --steps 100 --vtu 20
+```
+
+The example reconstructs the four-block interfaces from matching grid faces.
+The default generated grid has 20 spanwise cells; the solver requires at least
+three spanwise cells for its ghost layers. The cited database is a wall-resolved
+LES reference; this driver applies WMLES boundary treatment at those published
+flow conditions and is not itself a reproduction of the database solution.
+
 ## Re_tau = 5200 channel validation case
 `wmles/channel5200.py` sets up the UMD wall-model validation case
 (https://wmles.umd.edu/validation/channel-flow-at-re5200/), reproducing incompressible DNS
