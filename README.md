@@ -107,6 +107,9 @@ The default generated grid has 40 spanwise cells; the solver requires at least
 three spanwise cells for its ghost layers. The cited database is a wall-resolved
 LES reference; this driver applies WMLES boundary treatment at those published
 flow conditions and is not itself a reproduction of the database solution.
+The solver compiles the residual and SSP-RK update stages separately, rather
+than asking XLA to compile the entire multiblock RK step as one graph. The
+first step still compiles these kernels for the selected device and grid shapes.
 
 ## Re_tau = 5200 channel validation case
 `wmles/channel5200.py` sets up the UMD wall-model validation case

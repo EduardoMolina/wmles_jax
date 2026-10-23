@@ -44,7 +44,10 @@ class Solver:
         self.scheme, self.cfl = scheme, cfl
         self.sgs = make_sgs(sgs, **(sgs_kwargs or {}))
         self.constraints, self.sources, self.bc_passes = tuple(constraints), tuple(sources), bc_passes
-        self._rhs_j, self._step_j, self._dt_j = jit(self._rhs), jit(self._step), jit(self._dt)
+        self._rhs_j, self._dt_j = jit(self._rhs), jit(self._dt)
+        self._rk1_j, self._rk2_j, self._rk3_j = (
+            jit(self._rk1), jit(self._rk2), jit(self._rk3)
+        )
         self._wall_stats_j = jit(self._wall_stats)
 
     # ------------------------------------------------------------------ init
@@ -103,16 +106,30 @@ class Solver:
         return tuple(out)
 
     # ------------------------------------------------------------------ time stepping
-    def _step(self, Q, geoms, dt, time=0.0):
-        ax = lambda a, x, b, y: tuple(a * u + b * v for u, v in zip(x, y))
-        R0 = self._rhs(Q, geoms, time)
-        Q1 = ax(1.0, Q, dt, R0)
-        R1 = self._rhs(Q1, geoms, time + dt)
-        Q2 = ax(0.75, Q, 0.25, ax(1.0, Q1, dt, R1))
-        R2 = self._rhs(Q2, geoms, time + 0.5 * dt)
-        Q3 = ax(1.0 / 3.0, Q, 2.0 / 3.0, ax(1.0, Q2, dt, R2))
-        for c in self.constraints:
-            Q3 = c(Q3, geoms, self.blocks)
+    @staticmethod
+    def _rk1(Q, R, dt):
+        return tuple(q + dt * r for q, r in zip(Q, R))
+
+    @staticmethod
+    def _rk2(Q0, Q1, R1, dt):
+        return tuple(0.75 * q0 + 0.25 * (q1 + dt * r1)
+                     for q0, q1, r1 in zip(Q0, Q1, R1))
+
+    @staticmethod
+    def _rk3(Q0, Q2, R2, dt):
+        return tuple((1.0 / 3.0) * q0 + (2.0 / 3.0) * (q2 + dt * r2)
+                     for q0, q2, r2 in zip(Q0, Q2, R2))
+
+    def _advance_staged(self, Q, dt, time):
+        """Apply SSP-RK3 with separate compiled RHS and update stages."""
+        R0 = self._rhs_j(Q, self.geoms, time)
+        Q1 = self._rk1_j(Q, R0, dt)
+        R1 = self._rhs_j(Q1, self.geoms, time + dt)
+        Q2 = self._rk2_j(Q, Q1, R1, dt)
+        R2 = self._rhs_j(Q2, self.geoms, time + 0.5 * dt)
+        Q3 = self._rk3_j(Q, Q2, R2, dt)
+        for constraint in self.constraints:
+            Q3 = constraint(Q3, self.geoms, self.blocks)
         return Q3
 
     def _dt(self, Q, geoms, time=0.0):
@@ -137,7 +154,7 @@ class Solver:
         return self._dt_j(Q, self.geoms, time)
 
     def advance(self, Q, dt, time=0.0):
-        return self._step_j(Q, self.geoms, dt, time)
+        return self._advance_staged(Q, dt, time)
 
     def rhs(self, Q, time=0.0):
         return self._rhs_j(Q, self.geoms, time)
