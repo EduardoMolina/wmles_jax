@@ -17,6 +17,7 @@ from wmles.airfoil_case import (
     initial_state,
 )
 from wmles.backend import HAS_JAX, device_info, xp
+from wmles.io_wall_loads import WallLoadCSVWriter
 
 
 def main():
@@ -28,7 +29,7 @@ def main():
                         help="chord Reynolds number")
     parser.add_argument("--alpha", type=float, default=ALPHA_DEG,
                         help="geometric incidence in degrees")
-    parser.add_argument("--temperature", type=float, default=300.0,
+    parser.add_argument("--temperature", type=float, default=200.0,
                         help="free-stream temperature [K] (reference-scale assumption)")
     parser.add_argument("--pressure", type=float, default=101_325.0,
                         help="free-stream pressure [Pa] (reference-scale assumption)")
@@ -54,6 +55,7 @@ def main():
     if args.steps == 0:
         return
 
+    wall_writer = WallLoadCSVWriter("out/a_airfoil_wmles/forces_moments.csv", (0.25, 0.0, 0.0))
     state = initial_state(solver, props)
     time_elapsed, writer = 0.0, None
     for step in range(1, args.steps + 1):
@@ -70,14 +72,18 @@ def main():
                 mesh, solver, state, step, time_elapsed,
                 "out/a_airfoil_wmles", writer=writer,
             )
-        if step % max(1, args.steps // 10) == 0 or step == 1:
+        #if step % max(1, args.steps // 10) == 0 or step == 1:
+        if step % 1000 == 0 or step == 1:
             rho_min = min(
                 float(xp.min(block.interior(q[0])))
                 for block, q in zip(mesh.blocks, state)
             )
+            ctu = time_elapsed * props["U_inf"] / props["chord"]
             print(f"step={step:6d} t={time_elapsed:.4e} "
                   f"dt={float(dt):.3e} rho_min={rho_min:.6g} "
+                  f"ctu={ctu:.6f} "
                   f"step_time={time.perf_counter() - start:.3f}s")
+            wall_writer.write(step, time_elapsed, solver.wall_loads(state))
 
 
 if __name__ == "__main__":

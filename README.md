@@ -69,14 +69,22 @@ python -m examples.smooth_ramp --steps 100 --vtu 20   # optional ParaView output
 ## A-airfoil grid
 `wmles/airfoil_grid.py` generates a four-block Plot3D or VTK mesh from the
 provided A-airfoil contour in `tests/data/a-airfoil.dat`. The default periodic
-span is `0.20c`, with 20 uniformly spaced spanwise cells (`Delta z = 0.01c`).
+span is `0.0481c`, with 40 uniformly spaced spanwise cells
+(`Delta z = 0.0012025c`).
 The span is deliberately an integer multiple of the requested spacing so every
 spanwise cell has the same width.
+The tunnel block defaults to cross-stream spacing smoothing over 10% of its
+streamwise index range. This blends each line's normalized arclength spacing
+with a Gaussian-smoothed distribution along the block, fading to zero at the
+block ends to retain exact interface nodes. A gentler normal-projection blend
+also avoids folded cells at the tunnel corners. Use `--tunnel-smoothing 0` to
+disable spacing smoothing.
 
 ```bash
 python -m wmles.airfoil_grid out/a_airfoil.p3d
 python -m wmles.airfoil_grid out/a_airfoil.vtm
-python -m wmles.airfoil_grid out/a_airfoil.p3d --span-length 0.24 --spanwise-spacing 0.01
+python -m wmles.airfoil_grid out/a_airfoil.p3d --tunnel-smoothing 0.15
+python -m wmles.airfoil_grid out/a_airfoil.p3d --tunnel-smoothing 0
 ```
 
 `wmles/airfoil_case.py` sets up the published A-airfoil reference conditions
@@ -95,7 +103,7 @@ python -m examples.airfoil_wmles out/a_airfoil.p3d --steps 100 --vtu 20
 ```
 
 The example reconstructs the four-block interfaces from matching grid faces.
-The default generated grid has 20 spanwise cells; the solver requires at least
+The default generated grid has 40 spanwise cells; the solver requires at least
 three spanwise cells for its ghost layers. The cited database is a wall-resolved
 LES reference; this driver applies WMLES boundary treatment at those published
 flow conditions and is not itself a reproduction of the database solution.

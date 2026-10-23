@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Dict, Optional, Sequence, Union
 
 import numpy as np
-from scipy import interpolate
+from scipy import interpolate, ndimage
 
 from .plot3d import write_plot3d as _write_plot3d
 
@@ -297,6 +297,36 @@ def _remap_i_region(grid: np.ndarray, first: int, last: int) -> None:
     grid[first:last + 1] = remapped
 
 
+def _smooth_tunnel_spacing(
+    tunnel: np.ndarray,
+    smoothing_fraction: float,
+) -> np.ndarray:
+    """Smooth cross-tunnel node spacing along i while preserving all boundaries."""
+    if smoothing_fraction == 0.0:
+        return tunnel
+
+    parameters = np.stack([_normalized_arclength(line) for line in tunnel])
+    sigma = smoothing_fraction * (len(tunnel) - 1)
+    smoothed = ndimage.gaussian_filter1d(
+        parameters, sigma=sigma, axis=0, mode="nearest"
+    )
+    coordinate = np.linspace(0.0, 1.0, len(tunnel))
+    fade = np.clip(
+        np.minimum(coordinate, 1.0 - coordinate) / smoothing_fraction,
+        0.0, 1.0,
+    )
+    weight = fade**2 * (3.0 - 2.0 * fade)
+    smoothed = parameters + weight[:, np.newaxis] * (smoothed - parameters)
+
+    result = tunnel.copy()
+    for i in range(1, len(tunnel) - 1):
+        result[i] = np.column_stack([
+            np.interp(smoothed[i], parameters[i], tunnel[i, :, component])
+            for component in range(tunnel.shape[2])
+        ])
+    return result
+
+
 def _tunnel_distribution(count: int, bias: str) -> np.ndarray:
     limits = {
         "symmetric": (-1.3, 1.3),
@@ -332,6 +362,7 @@ def generate_four_block_mesh(
     te_old_segments: int = 3,
     te_new_segments: int = 6,
     te_refinement_ratio: float = 3.0,
+    tunnel_smoothing: float = 0.1,
 ) -> Dict[str, np.ndarray]:
     """Generate PyAero's four conformal NACA 0012 mesh blocks.
 
@@ -369,6 +400,9 @@ def generate_four_block_mesh(
             raise ValueError(f"{name} must be finite and positive")
     if not 0.0 < wake_equalize < 1.0:
         raise ValueError("wake_equalize must be strictly between 0 and 1")
+    if (not math.isfinite(tunnel_smoothing)
+            or not 0.0 <= tunnel_smoothing <= 0.5):
+        raise ValueError("tunnel_smoothing must be finite and between 0 and 0.5")
     if bias not in ("symmetric", "lower", "upper"):
         raise ValueError("bias must be 'symmetric', 'lower', or 'upper'")
 
@@ -474,7 +508,7 @@ def generate_four_block_mesh(
     # Use PyAero's normal-projection blend near the inner C-shaped boundary.
     tunnel_normals = _unit_normals(inner_tunnel)
     for j in range(1, tunnel.shape[1] - 1):
-        fraction = (j / len(tunnel[0])) ** 0.6
+        fraction = (j / len(tunnel[0])) ** 0.3
         displacement = tunnel[:, j] - inner_tunnel
         projected_distance = np.sum(
             displacement * tunnel_normals, axis=1
@@ -491,6 +525,8 @@ def generate_four_block_mesh(
     if edge_patch >= 2:
         _remap_i_region(tunnel, 0, edge_patch)
         _remap_i_region(tunnel, len(tunnel) - edge_patch - 1, len(tunnel) - 1)
+
+    tunnel = _smooth_tunnel_spacing(tunnel, tunnel_smoothing)
 
     # Block 4: wake from the TE/tunnel join to the downstream outlet.
     lower_tunnel_edge = tunnel[-1, ::-1]
@@ -638,7 +674,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="two-column airfoil coordinate file (default: tests/data/a-airfoil.dat)",
     )
     parser.add_argument(
-        "--ni", type=int, default=257,
+        "--ni", type=int, default=1025,
         help="initial contour spline point count (odd)",
     )
     parser.add_argument("--refinement-tolerance", type=float, default=175.0,
@@ -647,27 +683,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         help="trailing-edge segments on each side to replace")
     parser.add_argument("--te-new-segments", type=int, default=1,
                         help="new trailing-edge segments on each side")
-    parser.add_argument("--te-refinement-ratio", type=float, default=3.0,
+    parser.add_argument("--te-refinement-ratio", type=float, default=2.0,
                         help="trailing-edge refinement spacing ratio")
     parser.add_argument(
         "--blunt-te-divisions", type=int, default=3,
         help="number of cells across a blunt trailing edge (detected from endpoint gap)",
     )
-    parser.add_argument("--airfoil-divisions", type=int, default=30)
-    parser.add_argument("--airfoil-first-cell-height", type=float, default=0.0001)
+    parser.add_argument("--airfoil-divisions", type=int, default=35)
+    parser.add_argument("--airfoil-first-cell-height", type=float, default=0.00015)
     parser.add_argument("--airfoil-growth", type=float, default=1.05)
     parser.add_argument("--te-divisions", type=int, default=15)
-    parser.add_argument("--te-first-cell-height", type=float, default=0.0005)
+    parser.add_argument("--te-first-cell-height", type=float, default=0.0003)
     parser.add_argument("--te-growth", type=float, default=1.05)
     parser.add_argument("--tunnel-height", type=float, default=15.0)
     parser.add_argument("--tunnel-height-divisions", type=int, default=100)
-    parser.add_argument("--tunnel-height-ratio", type=float, default=10.0)
-    parser.add_argument("--wake-length", type=float, default=7.0)
-    parser.add_argument("--wake-divisions", type=int, default=100)
+    parser.add_argument("--tunnel-height-ratio", type=float, default=20.0)
+    parser.add_argument(
+        "--tunnel-smoothing", type=float, default=0.1,
+        help="smooth cross-tunnel spacing over this fraction of the block's i-lines (0 disables)",
+    )
+    parser.add_argument("--wake-length", type=float, default=15.0)
+    parser.add_argument("--wake-divisions", type=int, default=150)
     parser.add_argument("--wake-ratio", type=float, default=15.0)
-    parser.add_argument("--span-length", type=float, default=0.2,
+    parser.add_argument("--span-length", type=float, default=0.0481,
                         help="periodic spanwise length in chord lengths (default: 0.2)")
-    parser.add_argument("--spanwise-spacing", type=float, default=0.01,
+    parser.add_argument("--spanwise-spacing", type=float, default=0.0012025,
                         help="uniform spanwise cell spacing in chord lengths (default: 0.01)")
     parser.add_argument("--wake-equalize", type=float, default=0.30,
                         help="wake equalization location as a fraction of wake length")
@@ -709,6 +749,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         te_old_segments=args.te_old_segments,
         te_new_segments=args.te_new_segments,
         te_refinement_ratio=args.te_refinement_ratio,
+        tunnel_smoothing=args.tunnel_smoothing,
     )
     if args.output.suffix.lower() in (".vtm", ".vtmb", ".vtkhdf"):
         write_vtk(
@@ -728,6 +769,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"  airfoil: {args.airfoil}")
     print(f"  span: {args.span_length:g} c, dz: {args.spanwise_spacing:g} c "
           f"({spanwise_cells} uniform cells)")
+    print(f"  tunnel spacing smoothing: {args.tunnel_smoothing:g} of i-lines")
     for name, block in blocks.items():
         print(f"  {name}: {block.shape[0]} x {block.shape[1]} points")
     return 0

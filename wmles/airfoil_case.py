@@ -44,11 +44,12 @@ def flow_properties(gas=None, mach=MACH_INF, reynolds=RE_CHORD,
             or T_inf <= 0.0 or p_inf <= 0.0:
         raise ValueError("flow conditions must be finite; Mach, Re, T_inf, and p_inf must be positive")
     gas = gas or Gas()
-    rho_inf = p_inf / (gas.R * T_inf)
     mu_inf = float(gas.mu(xp.asarray(T_inf)))
-    nu_inf = mu_inf / rho_inf
     U_inf = mach * float(gas.sound_speed(xp.asarray(T_inf)))
-    chord = reynolds * nu_inf / U_inf
+    chord = 1.0
+    rho_inf = reynolds * mu_inf / (U_inf * chord)
+    nu_inf = mu_inf / rho_inf
+    p_inf = rho_inf * gas.R * T_inf
     alpha = np.deg2rad(alpha_deg)
     # Positive geometric incidence corresponds to a downward free-stream
     # velocity component in airfoil-fixed coordinates.
@@ -254,5 +255,5 @@ def describe_case(mesh, props):
         f"Re_c={props['reynolds']:.3e}, alpha={props['alpha_deg']:.2f} deg\n"
         f"chord={props['chord']:.6g} m, U_inf={props['U_inf']:.6g} m/s, "
         f"T_inf={props['T_inf']:.1f} K, p_inf={props['p_inf']:.1f} Pa\n"
-        f"grid={props['grid_path']}\n{describe(mesh)}"
+        f"rho_inf={props['rho_inf']:.6g} kg/m^3, grid={props['grid_path']}\n{describe(mesh)}"
     )
