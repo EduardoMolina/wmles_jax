@@ -1,0 +1,17 @@
+Data format for the profile files:
+First column : y/L (vertical coordinate)
+Second column : U/Uref (mean axial velocity)
+Third column : V/Uref (mean vertical velocity)
+Fourth column : uu/Uref^2 (axial Reynolds stress)
+Fifth column : vv/Uref^2 (vertical Reynolds stress)
+Sixth column : ww/Uref^2 (spanwise Reynolds stress)
+Seventh column : uv/Uref^2 (Reynolds shear stress)
+
+The profiles are normalized using the inlet reference velocity, Uref.
+
+WallShearStress.dat and WallPressure.dat files contain the viscous wall shear stress and the wall pressure at these three stations. Note that the wall pressure has been normalized by the mean inlet pressure at x/L = -1.
+
+The mean velocity and turbulence intensity profiles used for the turbulent inflow generation were taken from:
+https://www.mech.kth.se/~pschlatt/DATA/vel_2000_dns.prof
+
+

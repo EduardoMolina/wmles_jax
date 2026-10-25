@@ -22,6 +22,37 @@ def _kg(wa, wb, S, gamma):
     m = rho * un
     return xp.concatenate([m[None], m * u + p * S, (m * ea + p * un)[None]], axis=0)
 
+def _keep2(wa, wb, S, gamma):
+    rho = 0.5 * (wa[0] + wb[0])
+
+    u = 0.5 * (wa[1:4] + wb[1:4])
+    p = 0.5 * (wa[4] + wb[4])
+
+    un = xp.sum(u * S, axis=0)
+    m = rho * un
+
+    # kinetic-energy flux
+    kf = 0.5 * xp.sum(wa[1:4] * wb[1:4], axis=0)
+    K = m * kf
+
+    # internal-energy flux
+    ieL = wa[4] / ((gamma - 1.0) * wa[0])
+    ieR = wb[4] / ((gamma - 1.0) * wb[0])
+    I = m * 0.5 * (ieL + ieR)
+
+    # pressure-diffusion flux
+    unL = xp.sum(wa[1:4] * S, axis=0)
+    unR = xp.sum(wb[1:4] * S, axis=0)
+    P = 0.5 * (unR * wa[4] + unL * wb[4])
+
+    return xp.concatenate(
+        [
+            m[None],
+            m * u + p * S,
+            (K + I + P)[None],
+        ],
+        axis=0,
+    )
 
 class KEP:
     def __init__(self, order=4):
@@ -38,6 +69,33 @@ class KEP:
         L2, R2 = blk.slab(w, d, -2, -1), blk.slab(w, d, 1, 2)
         return 2.0 * ((2.0 / 3.0) * F - (1.0 / 12.0) * (_kg(L, R2, S, g) + _kg(L2, R, S, g)))
 
+class KEEP:
+    def __init__(self, order=4):
+        assert order in (2, 4)
+        self.order = order
+
+    def __call__(self, blk, geom, w, gas, d, theta=None):
+        S = blk.slab(geom.S[d], d, 0, 1)
+
+        L = blk.slab(w, d, -1, 0)
+        R = blk.slab(w, d, 0, 1)
+
+        F = _keep2(L, R, S, gas.gamma)
+
+        if self.order == 2:
+            return F
+
+        L2 = blk.slab(w, d, -2, -1)
+        R2 = blk.slab(w, d, 1, 2)
+
+        return 2.0 * (
+            (2.0 / 3.0) * F
+            - (1.0 / 12.0)
+            * (
+                _keep2(L,  R2, S, gas.gamma)
+                + _keep2(L2, R,  S, gas.gamma)
+            )
+        )
 
 def _albada(a, b, eps=1e-12):
     return (a * (b * b + eps) + b * (a * a + eps)) / (a * a + b * b + 2.0 * eps)

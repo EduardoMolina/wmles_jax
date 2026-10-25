@@ -1,8 +1,11 @@
 """Consistency tests.  Run:  python -m tests.test_multiblock   (from the project root)
    (set WMLES_BACKEND=numpy to force NumPy)"""
+import csv
+import tempfile
 import numpy as np
 from wmles import *
 from wmles.backend import DEVICE, HAS_JAX, device_info, xp
+from wmles.io_wall_loads import WallLoadCSVWriter
 
 L = (1.0, 0.6, 0.5)
 gas = Gas()
@@ -155,11 +158,59 @@ def selected_device_placement():
     print("selected device:", device_info())
 
 
+def wall_load_integration():
+    axes = [np.linspace(0.0, 1.0, 5)] * 3
+    nodes = np.stack(np.meshgrid(*axes, indexing="ij"))
+    block = Block("wall", nodes)
+    mesh = Mesh([block])
+    wall = WallModel(EquilibriumWallModel(), T_wall=300.0)
+    for face in ("imin", "imax", "jmin", "jmax", "kmin", "kmax"):
+        block.set_bc(face, SlipWall())
+    block.set_bc("jmin", wall)
+    block.set_bc("jmax", wall)
+    mesh.finalize()
+    solver = Solver(mesh, gas, KEP(2), sgs=None)
+
+    def uniform(xc):
+        z = 0.0 * xc[0]
+        return xp.stack([1.2 + z, 30.0 + z, z, z, 1e5 + z])
+
+    Q = solver.init_state(uniform)
+    center = (0.5, 0.5, 0.5)
+    loads = solver.wall_loads(Q, center)
+    stats = solver.wall_stats(Q)
+    assert set(loads) == {("wall", "jmin"), ("wall", "jmax")}
+    for name, normal_y in (("jmin", -1.0), ("jmax", 1.0)):
+        force, moment = loads[("wall", name)]
+        np.testing.assert_allclose(force[0], np.sum(stats[("wall", name)][0]) / 16.0)
+        np.testing.assert_allclose(force[1], normal_y * 1e5)
+        np.testing.assert_allclose(force[2], 0.0, atol=1e-10)
+        np.testing.assert_allclose(moment[:2], 0.0, atol=1e-8)
+        np.testing.assert_allclose(moment[2], -normal_y * 0.5 * force[0])
+    np.testing.assert_allclose(sum(v[1] for v in loads.values()), 0.0, atol=1e-8)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = f"{tmp}/wall_loads.csv"
+        csv_writer = WallLoadCSVWriter(path, center)
+        csv_writer.write(7, 0.25, loads)
+        with open(path, newline="") as stream:
+            rows = list(csv.reader(stream))
+        assert len(rows) == 4  # header, two wall faces, and total
+        assert rows[-1][0:4] == ["7", "0.25", "TOTAL", "total"]
+        resumed_writer = WallLoadCSVWriter(path, center, append=True)
+        resumed_writer.write(8, 0.5, loads)
+        with open(path, newline="") as stream:
+            rows = list(csv.reader(stream))
+        assert len(rows) == 7
+        assert rows[-1][0:4] == ["8", "0.5", "TOTAL", "total"]
+
+
 if __name__ == "__main__":
     print("backend:", "jax" if HAS_JAX else "numpy")
     selected_device_placement()
     print("characteristic far-field:"); characteristic_farfield()
     print("wall model:"); wall_model_selfconsistency()
+    print("wall load integration and CSV output:"); wall_load_integration()
     print("free-stream preservation on a skewed grid:"); freestream()
     print("multiblock vs single block RHS:")
     for kind in ("split", "flip", "rot_cyc"):

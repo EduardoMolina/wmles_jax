@@ -44,7 +44,11 @@ class Solver:
         self.scheme, self.cfl = scheme, cfl
         self.sgs = make_sgs(sgs, **(sgs_kwargs or {}))
         self.constraints, self.sources, self.bc_passes = tuple(constraints), tuple(sources), bc_passes
-        self._rhs_j, self._step_j, self._dt_j = jit(self._rhs), jit(self._step), jit(self._dt)
+        self._rhs_j, self._dt_j = jit(self._rhs), jit(self._dt)
+        self._rk1_j, self._rk2_j, self._rk3_j = (
+            jit(self._rk1), jit(self._rk2), jit(self._rk3)
+        )
+        self._wall_stats_j = jit(self._wall_stats)
 
     # ------------------------------------------------------------------ init
     def init_state(self, prim_fn):
@@ -52,7 +56,7 @@ class Solver:
         return tuple(self.gas.prim_to_cons(asarray(prim_fn(g.xc))) for g in self.geoms)
 
     # ------------------------------------------------------------------ ghost cells
-    def apply_bcs(self, Q, geoms):
+    def apply_bcs(self, Q, geoms, time=0.0):
         Q = list(Q)
         for _ in range(self.bc_passes):
             for a in range(3):
@@ -64,7 +68,7 @@ class Solver:
                             src = q if f.nb == ib else Q[f.nb]
                             q = exchange(q, src, blk, (a, s), self.blocks[f.nb], f, "cell")
                         else:
-                            q = f.fill(q, blk, geoms[ib], self.gas, a, s)
+                            q = f.fill_at_time(q, blk, geoms[ib], self.gas, a, s, time)
                     Q[ib] = q
         return tuple(Q)
 
@@ -90,8 +94,8 @@ class Solver:
             rhs = rhs - (F[sl(F.ndim, d, slice(1, None))] - F[sl(F.ndim, d, slice(None, -1))])
         return rhs / blk.interior(geom.vol)
 
-    def _rhs(self, Q, geoms):
-        Q = self.apply_bcs(Q, geoms)
+    def _rhs(self, Q, geoms, time=0.0):
+        Q = self.apply_bcs(Q, geoms, time)
         ng = self.mesh.ng
         out = []
         for ib, (q, g) in enumerate(zip(Q, geoms)):
@@ -102,21 +106,35 @@ class Solver:
         return tuple(out)
 
     # ------------------------------------------------------------------ time stepping
-    def _step(self, Q, geoms, dt):
-        ax = lambda a, x, b, y: tuple(a * u + b * v for u, v in zip(x, y))
-        R0 = self._rhs(Q, geoms)
-        Q1 = ax(1.0, Q, dt, R0)
-        R1 = self._rhs(Q1, geoms)
-        Q2 = ax(0.75, Q, 0.25, ax(1.0, Q1, dt, R1))
-        R2 = self._rhs(Q2, geoms)
-        Q3 = ax(1.0 / 3.0, Q, 2.0 / 3.0, ax(1.0, Q2, dt, R2))
-        for c in self.constraints:
-            Q3 = c(Q3, geoms, self.blocks)
+    @staticmethod
+    def _rk1(Q, R, dt):
+        return tuple(q + dt * r for q, r in zip(Q, R))
+
+    @staticmethod
+    def _rk2(Q0, Q1, R1, dt):
+        return tuple(0.75 * q0 + 0.25 * (q1 + dt * r1)
+                     for q0, q1, r1 in zip(Q0, Q1, R1))
+
+    @staticmethod
+    def _rk3(Q0, Q2, R2, dt):
+        return tuple((1.0 / 3.0) * q0 + (2.0 / 3.0) * (q2 + dt * r2)
+                     for q0, q2, r2 in zip(Q0, Q2, R2))
+
+    def _advance_staged(self, Q, dt, time):
+        """Apply SSP-RK3 with separate compiled RHS and update stages."""
+        R0 = self._rhs_j(Q, self.geoms, time)
+        Q1 = self._rk1_j(Q, R0, dt)
+        R1 = self._rhs_j(Q1, self.geoms, time + dt)
+        Q2 = self._rk2_j(Q, Q1, R1, dt)
+        R2 = self._rhs_j(Q2, self.geoms, time + 0.5 * dt)
+        Q3 = self._rk3_j(Q, Q2, R2, dt)
+        for constraint in self.constraints:
+            Q3 = constraint(Q3, self.geoms, self.blocks)
         return Q3
 
-    def _dt(self, Q, geoms):
+    def _dt(self, Q, geoms, time=0.0):
         gas = self.gas
-        Q = self.apply_bcs(Q, geoms)
+        Q = self.apply_bcs(Q, geoms, time)
         dts = []
         for blk, q, g in zip(self.blocks, Q, geoms):
             w, T = gas.cons_to_prim(q)
@@ -132,24 +150,83 @@ class Solver:
             dts.append(xp.min(blk.interior(self.cfl / ((lam + 4.0 * lamv) / g.vol))))
         return xp.min(xp.stack(dts))
 
-    def max_dt(self, Q):
-        return self._dt_j(Q, self.geoms)
+    def max_dt(self, Q, time=0.0):
+        return self._dt_j(Q, self.geoms, time)
 
-    def advance(self, Q, dt):
-        return self._step_j(Q, self.geoms, dt)
+    def advance(self, Q, dt, time=0.0):
+        return self._advance_staged(Q, dt, time)
 
-    def rhs(self, Q):
-        return self._rhs_j(Q, self.geoms)
+    def rhs(self, Q, time=0.0):
+        return self._rhs_j(Q, self.geoms, time)
 
     # ------------------------------------------------------------------ diagnostics
     def wall_stats(self, Q):
         """{(block, face): (tau_w, q_w)} for all wall-modelled faces."""
-        Q = self.apply_bcs(Q, self.geoms)
+        return {
+            key: (np.asarray(tau), np.asarray(qw))
+            for key, (tau, qw) in self._wall_stats_j(Q, self.geoms).items()
+        }
+
+    def _wall_stats(self, Q, geoms):
+        Q = self.apply_bcs(Q, geoms)
         out = {}
-        for ib, (blk, q, g) in enumerate(zip(self.blocks, Q, self.geoms)):
+        for ib, (blk, q, g) in enumerate(zip(self.blocks, Q, geoms)):
             w, T = self.gas.cons_to_prim(q)
             for (a, s), bc in blk.faces.items():
                 if isinstance(bc, WallModel):
                     _, tau, qw = bc.wall_flux(w, T, blk, g, self.gas, a, s)
-                    out[(blk.name, "ijk"[a] + ("min", "max")[s])] = (np.asarray(tau), np.asarray(qw))
+                    out[(blk.name, "ijk"[a] + ("min", "max")[s])] = (tau, qw)
+        return out
+
+    def wall_loads(self, Q, moment_center=(0.0, 0.0, 0.0)):
+        """Integrate fluid-on-wall force and moment for each WallModel face.
+
+        Returns ``{(block, face): (force, moment)}``, with Cartesian force in N
+        and moment in N m. Moments are taken about ``moment_center``.
+        """
+        center = np.asarray(moment_center, dtype=float)
+        if center.shape != (3,) or not np.all(np.isfinite(center)):
+            raise ValueError("moment_center must contain three finite coordinates")
+
+        Q = self.apply_bcs(Q, self.geoms)
+        out = {}
+        for blk, q, g in zip(self.blocks, Q, self.geoms):
+            w, T = self.gas.cons_to_prim(q)
+            for (axis, side), bc in blk.faces.items():
+                if not isinstance(bc, WallModel):
+                    continue
+
+                ng, n = blk.ng, blk.n[axis]
+                face_index = ng if side == 0 else ng + n
+                match_index = ng + bc.n_match - 1 if side == 0 else ng + n - bc.n_match
+                cell_index = ng if side == 0 else ng + n - 1
+
+                area_vector = blk.take(g.S[axis], axis, face_index)
+                area = xp.sqrt(xp.sum(area_vector * area_vector, axis=0))
+                normal = area_vector / area
+                if side == 0:
+                    normal = -normal
+
+                velocity = blk.take(w[1:4], axis, match_index)
+                tangential_velocity = velocity - xp.sum(
+                    velocity * normal, axis=0
+                )[None] * normal
+                speed = xp.sqrt(xp.sum(tangential_velocity ** 2, axis=0) + 1e-20)
+                tangent = tangential_velocity / speed
+                _, tau, _ = bc.wall_flux(w, T, blk, g, self.gas, axis, side)
+                wall_pressure = blk.take(w[4], axis, cell_index)
+                traction = (wall_pressure[None] * normal + tau[None] * tangent) * area[None]
+
+                face_center = blk.take(g.xf[axis], axis, face_index)
+                arm = face_center - center.reshape((3,) + (1,) * (face_center.ndim - 1))
+                moment_density = xp.stack([
+                    arm[1] * traction[2] - arm[2] * traction[1],
+                    arm[2] * traction[0] - arm[0] * traction[2],
+                    arm[0] * traction[1] - arm[1] * traction[0],
+                ])
+                tangential_axes = tuple(range(1, traction.ndim))
+                force = xp.sum(traction, axis=tangential_axes)
+                moment = xp.sum(moment_density, axis=tangential_axes)
+                face = "ijk"[axis] + ("min", "max")[side]
+                out[(blk.name, face)] = (np.asarray(force), np.asarray(moment))
         return out
