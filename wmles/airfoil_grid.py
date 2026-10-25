@@ -19,7 +19,7 @@ from typing import Dict, Optional, Sequence, Union
 import numpy as np
 from scipy import interpolate, ndimage
 
-from .plot3d import write_plot3d as _write_plot3d
+from .plot3d_wm import write_plot3d as _write_plot3d
 
 
 def naca0012_surface(parameter: np.ndarray) -> np.ndarray:
@@ -45,9 +45,10 @@ def naca0012_surface(parameter: np.ndarray) -> np.ndarray:
 def read_airfoil_coordinates(filename: Union[str, Path]) -> np.ndarray:
     """Read, orient, and normalize two-column airfoil coordinates.
 
-    Input points should follow the contour from one trailing-edge side, around
-    the leading edge, to the other trailing-edge side. Header and comment lines
-    are ignored. Coordinates are normalized to unit chord along the x axis.
+    Input points may follow an open trailing-edge-to-trailing-edge contour or a
+    closed loop. Closed loops are rotated to run from the upper trailing edge,
+    around the leading edge, to the lower trailing edge. Header and comment
+    lines are ignored; coordinates are normalized to unit chord along x.
     """
     points = []
     with Path(filename).open("r", encoding="utf-8") as coordinate_file:
@@ -91,6 +92,27 @@ def read_airfoil_coordinates(filename: Union[str, Path]) -> np.ndarray:
         raise ValueError("airfoil contour must have a nonzero chord along x")
     coordinates[:, 0] = (coordinates[:, 0] - np.min(coordinates[:, 0])) / chord
     coordinates[:, 1] /= chord
+
+    if np.linalg.norm(coordinates[0] - coordinates[-1]) <= 1e-12:
+        coordinates = coordinates[:-1]
+        te_x = float(np.max(coordinates[:, 0]))
+        te_indices = np.flatnonzero(np.isclose(
+            coordinates[:, 0], te_x, rtol=0.0, atol=1e-10
+        ))
+        upper_te = int(te_indices[np.argmax(coordinates[te_indices, 1])])
+        lower_te = int(te_indices[np.argmin(coordinates[te_indices, 1])])
+        point_count = len(coordinates)
+        if upper_te == lower_te:
+            indices = np.concatenate((
+                np.arange(upper_te, point_count), np.arange(upper_te + 1)
+            ))
+        else:
+            forward_distance = (lower_te - upper_te) % point_count
+            direction = 1 if forward_distance > point_count / 2 else -1
+            distance = (forward_distance if direction == 1
+                        else (upper_te - lower_te) % point_count)
+            indices = (upper_te + direction * np.arange(distance + 1)) % point_count
+        coordinates = coordinates[indices]
 
     # PyAero's contour convention starts at the upper trailing edge.
     if coordinates[0, 1] < coordinates[-1, 1]:

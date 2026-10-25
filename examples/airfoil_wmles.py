@@ -35,7 +35,7 @@ def main():
                         help="free-stream pressure [Pa] (reference-scale assumption)")
     parser.add_argument("--n-match", type=int, default=1,
                         help="wall-model sampling cell counted from the wall")
-    parser.add_argument("--cfl", type=float, default=0.5)
+    parser.add_argument("--cfl", type=float, default=0.95)
     parser.add_argument("--steps", type=int, default=0)
     parser.add_argument("--vtu", type=int, default=0,
                         help="write VTU every N steps (requires PyVista)")

@@ -15,7 +15,7 @@ wmles/
   io_wall_loads.py CSV export of integrated wall forces and moments
   channel5200.py UMD wall-model validation case setup: grid table, flow properties, IC, plane/time stats
   smooth_ramp.py UMD smooth-ramp grid-6 WMLES mesh and solver setup
-  plot3d.py      Plot3D multiblock reader/writer (formatted + unformatted, endianness/precision/iblank auto-detect)
+  plot3d_wm.py   Project Plot3D multiblock reader/writer (formatted + unformatted, endianness/precision/iblank auto-detect)
   nmf.py         Neutral Map File parser, span re-discretization, topology builder with automatic block splitting
 examples/channel_wmles.py   Ma_b=0.3 channel, 2 blocks in x, wall-modelled walls; 2nd CLI arg = VTU output stride
 examples/channel_ReTau5200.py  UMD Re_tau~5200 channel validation case driver (see below)
@@ -154,6 +154,13 @@ statistics -- far too slow on the NumPy fallback used for testing here; this nee
 JAX backend. CPU/JAX integration checks are available, but GPU execution and actual
 Re_tau=5200 agreement with DNS have not been validated here.
 
+## OAT15a DPW8
+
+# Mesh generation L1
+```bash
+python -m wmles.airfoil_grid out/oat15a_L1.vtm --airfoil tests/data/oat15a.dat --ni 513 --span-length 0.065 --spanwise-spacing 0.001625 --blunt-te-divisions 12 --wake-equalize 0.8
+```
+
 ## JAX device selection
 JAX uses its default device when `WMLES_DEVICE` is unset or `auto`. Set it to `cpu` to
 force CPU execution, or `gpu` to require an available accelerator. The GPU setting fails
@@ -263,6 +270,18 @@ print(describe(mesh))
 * **Span:** the TMBWG grids have one spanwise cell (`y` in [-1,0], span = index i); the solver needs
   >= `ng` (=3) cells per direction, so use `respan`. `periodic=(type, axis)` turns min/max faces of
   that BC type into a periodic pair (translation taken from the nodes).
+
+### NASA Plot3D Utilities and METIS
+The optional NASA `plot3d` utilities can use METIS for block partitioning. On macOS, the Python
+`metis` binding needs `METIS_DLL` to point to the native library; a Cargo bin directory is not
+required. With METIS installed through Homebrew, run the utility in the `pyvista` conda environment:
+
+```bash
+METIS_DLL="$(brew --prefix metis)/lib/libmetis.dylib" \
+  conda run -n pyvista python -m wmles.plot3d_util
+```
+
+Install the native library first if needed with `brew install metis`.
 
 **Verified (NumPy backend, in the sandbox), on the real L5 grid and synthetic cases**
 * Plot3D round trips: formatted/unformatted, LE/BE, float32/64, with/without iblank; 2-D read.

@@ -174,11 +174,14 @@ def write_plot3d(path, nodes, formatted=True, iblank=None, dtype="f8", endian="<
             for X in nodes:
                 f.write("".join(f"{s:12d}" for s in X.shape[1:]) + "\n")
             for b, X in enumerate(nodes):
-                flat = np.concatenate([X[c].ravel(order="F") for c in range(3)])
+                for component in X:
+                    flat = component.ravel(order="F")
+                    for k in range(0, len(flat), 3):
+                        f.write("".join(f"{v:26.16E}" for v in flat[k: k + 3]) + "\n")
                 if iblank is not None:
-                    flat = np.concatenate([flat, np.asarray(iblank[b]).ravel(order="F")])
-                for k in range(0, len(flat), 3):
-                    f.write("".join(f"{v:26.16E}" for v in flat[k: k + 3]) + "\n")
+                    flat = np.asarray(iblank[b]).ravel(order="F")
+                    for k in range(0, len(flat), 3):
+                        f.write("".join(f"{v:26.16E}" for v in flat[k: k + 3]) + "\n")
         return
 
     def rec(payload):

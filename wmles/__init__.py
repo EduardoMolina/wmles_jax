@@ -5,5 +5,5 @@ from .bc import SlipWall, NoSlipWall, Dirichlet, CharacteristicFarfield, Extrapo
 from .wall_model import EquilibriumWallModel
 from .schemes import KEP, MUSCLHLLC, Hybrid
 from .solver import Solver, ConstantMassFlux
-from .plot3d import read_plot3d, write_plot3d
+from .plot3d_wm import read_plot3d, write_plot3d
 from .nmf import read_nmf, respan, extrude_2d, build_mesh, describe

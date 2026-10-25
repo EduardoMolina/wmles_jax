@@ -12,7 +12,7 @@ import numpy as np
 from .bc import CharacteristicFarfield, WallModel
 from .gas import Gas
 from .nmf import FACES, NMF, Patch, build_mesh, describe
-from .plot3d import read_plot3d
+from .plot3d_wm import read_plot3d
 from .schemes import Hybrid
 from .solver import Solver
 from .wall_model import EquilibriumWallModel

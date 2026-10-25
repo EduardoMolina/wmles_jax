@@ -1,6 +1,6 @@
 """Neutral Map File (NMF) support and multiblock mesh construction from Plot3D grids.
 
-    from wmles.plot3d import read_plot3d
+    from wmles.plot3d_wm import read_plot3d
     from wmles.nmf import read_nmf, respan, build_mesh, describe
 
     grid = read_plot3d("nak_a_ff_500c_2zn_L5.p3dfmt")

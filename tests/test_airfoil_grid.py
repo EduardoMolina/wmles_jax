@@ -6,10 +6,19 @@ import numpy as np
 import pyvista as pv
 
 from wmles.airfoil_grid import generate_four_block_mesh, main, read_airfoil_coordinates
-from wmles.plot3d import read_plot3d
+from wmles.plot3d_wm import read_plot3d
 
 
 class AirfoilGridTests(unittest.TestCase):
+    def test_reads_closed_oat15a_contour_in_trailing_edge_order(self):
+        coordinates = read_airfoil_coordinates("tests/data/oat15a.dat")
+
+        self.assertAlmostEqual(coordinates[0, 0], 1.0)
+        self.assertAlmostEqual(coordinates[-1, 0], 1.0)
+        self.assertGreater(coordinates[0, 1], coordinates[-1, 1])
+        self.assertAlmostEqual(float(coordinates[:, 0].min()), 0.0)
+        self.assertGreater(len(coordinates), 400)
+
     def test_full_resolution_a_airfoil_mesh_has_no_folded_cells(self):
         blocks = generate_four_block_mesh(
             ni=1025,
@@ -101,12 +110,24 @@ class AirfoilGridTests(unittest.TestCase):
                 "--spanwise-spacing", "0.01",
             ])
             blocks = read_plot3d(output).nodes
+            try:
+                from plot3d import read_plot3D
+            except ImportError:
+                read_plot3D = None
+            if read_plot3D is not None:
+                nasa_blocks = read_plot3D(str(output))
 
         self.assertEqual(len(blocks), 4)
         for block in blocks:
             self.assertEqual(block.shape[-1], 21)
             np.testing.assert_allclose(block[2, 0, 0], np.linspace(0.0, 0.2, 21))
             np.testing.assert_allclose(np.diff(block[2, 0, 0]), 0.01)
+        if read_plot3D is not None:
+            self.assertEqual(len(nasa_blocks), len(blocks))
+            for nasa_block, block in zip(nasa_blocks, blocks):
+                np.testing.assert_allclose(
+                    np.stack((nasa_block.X, nasa_block.Y, nasa_block.Z)), block
+                )
 
     def test_vtk_output_has_uniform_span_spacing(self):
         with tempfile.TemporaryDirectory() as directory:
