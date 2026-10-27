@@ -233,7 +233,7 @@ class Mesh:
         geoms = []
         for b in self.blocks:
             vol, xc, S, xf = compute_geometry(b.X)
-            if vol.min() <= 0:
+            if b.interior(vol).min() <= 0:
                 raise ValueError(f"block {b.name}: non-positive cell volume (left-handed or folded grid)")
             b.geom = Geom(asarray(vol), asarray(xc),
                           tuple(asarray(s) for s in S), tuple(asarray(x) for x in xf))

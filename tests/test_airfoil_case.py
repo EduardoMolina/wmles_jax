@@ -22,6 +22,33 @@ from wmles.mesh import Interface
 
 
 class AirfoilCaseTests(unittest.TestCase):
+    def test_builds_wall_modelled_oat15a_blunt_trailing_edge(self):
+        blocks = generate_four_block_mesh(
+            ni=65,
+            airfoil_divisions=5,
+            te_divisions=4,
+            tunnel_height_divisions=12,
+            wake_divisions=16,
+            airfoil_coordinates=read_airfoil_coordinates(
+                "tests/data/oat15a.dat"
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            grid_path = Path(directory) / "oat15a.p3d"
+            write_plot3d(
+                grid_path, list(blocks.values()),
+                span_length=0.2, spanwise_cells=8,
+            )
+            mesh, _, _ = build_case(grid_path)
+
+        te_wall_faces = [
+            bc for block in mesh.blocks
+            if block.origin["block"] == 1
+            for face, bc in block.faces.items()
+            if face == (1, 0) and isinstance(bc, WallModel)
+        ]
+        self.assertTrue(te_wall_faces)
+
     def test_reference_flow_properties(self):
         props = flow_properties()
         self.assertEqual(props["mach"], MACH_INF)

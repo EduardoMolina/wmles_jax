@@ -204,6 +204,20 @@ def _build_grid_nmf(nodes, flipped):
                     boundary_type, block, face,
                     _full_face_ranges(face, block_dims),
                 ))
+    te_block = _BLOCK_NAMES.index("trailing_edge")
+    te_face = 5
+    te_interfaces = sorted(
+        (min(p.partner["ranges"][1]), max(p.partner["ranges"][1]))
+        for p in patches
+        if p.partner and p.partner["block"] == te_block
+        and p.partner["face"] == te_face
+    )
+    for (_, previous_end), (next_start, _) in zip(te_interfaces, te_interfaces[1:]):
+        if next_start > previous_end:
+            patches.append(Patch(
+                "viscous_solid", te_block, te_face,
+                ((1, dims[te_block][2]), (previous_end, next_start)),
+            ))
     return NMF(dims, patches)
 
 
