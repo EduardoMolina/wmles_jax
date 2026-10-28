@@ -5,8 +5,7 @@
 The reference flow is Mach 0.15, Re_c=1e7, alpha=13.3 degrees. A zero-step
 run assembles and reports the case; positive --steps advances the solver.
 """
-import argparse
-import time
+import argparse, time, os, subprocess
 
 from wmles.airfoil_case import (
     ALPHA_DEG,
@@ -19,6 +18,15 @@ from wmles.airfoil_case import (
 from wmles.backend import HAS_JAX, device_info, xp
 from wmles.io_wall_loads import WallLoadCSVWriter
 
+def process_rss_mib():
+    """Return this process's current resident set size in MiB."""
+    result = subprocess.run(
+        ("ps", "-o", "rss=", "-p", str(os.getpid())),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return int(result.stdout.strip()) / 1024.0
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -72,16 +80,18 @@ def main():
                 mesh, solver, state, step, time_elapsed,
                 "out/a_airfoil_wmles", writer=writer,
             )
-        #if step % max(1, args.steps // 10) == 0 or step == 1:
-        if step % 1000 == 0 or step == 1:
+        if step % max(1, args.steps // 10) == 0 or step == 1:
+        #if step % 1000 == 0 or step == 1:
             rho_min = min(
                 float(xp.min(block.interior(q[0])))
                 for block, q in zip(mesh.blocks, state)
             )
             ctu = time_elapsed * props["U_inf"] / props["chord"]
+            rss_mib = process_rss_mib()
             print(f"step={step:6d} t={time_elapsed:.4e} "
                   f"dt={float(dt):.3e} rho_min={rho_min:.6g} "
                   f"ctu={ctu:.6f} "
+                  f"rss_mib={rss_mib:.3f} "
                   f"step_time={time.perf_counter() - start:.3f}s")
             wall_writer.write(step, time_elapsed, solver.wall_loads(state))
 

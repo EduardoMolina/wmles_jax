@@ -39,7 +39,7 @@ class AirfoilCaseTests(unittest.TestCase):
                 grid_path, list(blocks.values()),
                 span_length=0.2, spanwise_cells=8,
             )
-            mesh, _, _ = build_case(grid_path)
+            mesh, solver, props = build_case(grid_path)
 
         te_wall_faces = [
             bc for block in mesh.blocks
@@ -48,6 +48,34 @@ class AirfoilCaseTests(unittest.TestCase):
             if face == (1, 0) and isinstance(bc, WallModel)
         ]
         self.assertTrue(te_wall_faces)
+        wall_source_blocks = {
+            block.origin["block"] for block in mesh.blocks
+            if any(isinstance(bc, WallModel) for bc in block.faces.values())
+        }
+        self.assertTrue({0, 1}.issubset(wall_source_blocks))
+        self.assertTrue(any(
+            isinstance(bc, CharacteristicFarfield)
+            for block in mesh.blocks for bc in block.faces.values()
+        ))
+
+        expected_cells = sum(
+            (block.shape[0] - 1) * (block.shape[1] - 1) * 8
+            for block in blocks.values()
+        )
+        self.assertEqual(sum(int(np.prod(block.n)) for block in mesh.blocks), expected_cells)
+        for index, block in enumerate(mesh.blocks):
+            self.assertGreater(float(np.asarray(block.interior(block.geom.vol)).min()), 0.0)
+            for side in (0, 1):
+                periodic = block.faces[(2, side)]
+                self.assertIsInstance(periodic, Interface)
+                self.assertEqual(periodic.nb, index)
+
+        state = initial_state(solver, props)
+        self.assertTrue(all(np.all(np.isfinite(np.asarray(q))) for q in state))
+        dt = solver.max_dt(state)
+        self.assertGreater(float(dt), 0.0)
+        advanced = solver.advance(state, dt)
+        self.assertTrue(all(np.all(np.isfinite(np.asarray(q))) for q in advanced))
 
     def test_reference_flow_properties(self):
         props = flow_properties()
