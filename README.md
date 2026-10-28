@@ -158,7 +158,7 @@ Re_tau=5200 agreement with DNS have not been validated here.
 
 # Mesh generation L1
 ```bash
-python -m wmles.airfoil_grid out/oat15a_L1.vtm --airfoil tests/data/oat15a.dat --ni 513 --span-length 0.065 --spanwise-spacing 0.001625 --blunt-te-divisions 12 --wake-equalize 0.8
+python -m wmles.airfoil_grid out/oat15a_L1.p3d --airfoil tests/data/oat15a.dat --ni 513 --span-length 0.065 --spanwise-spacing 0.001625 --blunt-te-divisions 12 --wake-equalize 0.8
 python -m examples.airfoil_wmles out/oat15a_L1.p3d --steps 10 --mach 0.73 --re 3e6 --temperature 273.0 --alpha 3.5
 ```
 
