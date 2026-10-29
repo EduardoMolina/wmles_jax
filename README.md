@@ -11,6 +11,7 @@ wmles/
   schemes.py     KEP (order 2/4 split-form central), MUSCL-HLLC, Hybrid (Ducros switch)
   viscous.py     Green-Gauss gradients, compact-corrected face gradients, viscous fluxes
   solver.py      apply_bcs -> RHS -> SSP-RK3, CFL dt, constant-mass-flux constraint, wall stats/loads
+  sharding.py    multi-device block ownership (METIS manifest) and DistributedSolver (halo exchange, global reductions)
   io_vtk.py      VTU/PVD export and restart loading via pyvista (optional dependency)
   io_wall_loads.py CSV export of integrated wall forces and moments
   channel5200.py UMD wall-model validation case setup: grid table, flow properties, IC, plane/time stats
@@ -203,6 +204,36 @@ WMLES_DEVICE=gpu python -m tests.test_sod
 WMLES_DEVICE=gpu python -m examples.channel_wmles 1
 WMLES_DEVICE=gpu python -m examples.channel_ReTau5200 1 1 10 5 0
 ```
+
+## Multi-device (single node, e.g. 8 x L40S on AWS g6e.48xlarge)
+`WMLES_NUM_DEVICES=N` (default 1) sets how many devices of the selected platform
+`wmles.backend.select_devices` returns; asking for more than JAX exposes raises, so a
+run cannot silently use fewer GPUs or the CPU. `wmles/sharding.py` provides:
+
+* `Ownership` - block -> device map, from a METIS manifest (`Ownership.from_manifest`,
+  which rejects a manifest that does not match the mesh) or a cell-balanced greedy
+  fallback; `.report(mesh)` gives per-device cells, imbalance and cross-device halo bytes.
+* `DistributedSolver` - same API as `Solver` (`init_state`, `rhs`, `max_dt`, `advance`,
+  `wall_stats`, `wall_loads`, `conserved_totals`). Each block's state and metrics live on
+  its owner device and its kernels are compiled per block shape (`shape_report` shows
+  padding blocks into one shape would add >100% cells on OAT15a). Halo exchange runs
+  the reference's (pass, axis, block) sequence: the neighbour's ghost slab is extracted on
+  its device with the interface orientation, moved with `device_put`, and inserted
+  together with the physical BCs. CFL and constraint sums are reduced on device 0 and
+  replicated back without host synchronisation. The single-device `Solver` is unchanged
+  and is the reference.
+
+```bash
+# on the target host: require eight GPUs before anything else
+conda run -n pyvista env WMLES_DEVICE=gpu python -m wmles.backend --require 8
+# split the grid, compare RHS / dt / 3 RK3 steps against the one-device solver
+conda run -n pyvista env WMLES_DEVICE=gpu python -m wmles.sharding out/oat15a_L1.p3d \
+    --devices 8 --steps 3            # add --manifest M.json to use the METIS partition
+conda run -n pyvista env WMLES_DEVICE=gpu python -m unittest tests.test_sharding   # runs 2/8-GPU gates
+```
+`tests/__init__.py` forces 8 virtual CPU devices so `tests.test_sharding` runs on a laptop;
+the GPU gates skip unless enough GPUs are visible. The manifest must come from the same
+grid and `--partitions` as the run.
 
 ## Visualization (pyvista, .vtu/.pvd)
 `pip install pyvista` (needs the `vtk` package too, which pyvista pulls in). Not required to

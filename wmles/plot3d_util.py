@@ -58,7 +58,7 @@ def _segments(ncells, count):
     return list(zip(edges[:-1], edges[1:]))
 
 
-def _split_mesh(mesh, target_parts):
+def split_mesh(mesh, target_parts):
     """Split each source block along its longest axis into solver-sized blocks."""
     total = sum(int(np.prod(block.n)) for block in mesh.blocks)
     target_cells = max(1, int(np.ceil(total / target_parts)))
@@ -220,7 +220,7 @@ def preprocess_oat15a(grid_path, manifest_path, partitions=8, ng=3):
     mesh, _, _ = build_case(grid_path)
     if mesh.ng != ng:
         raise ValueError(f"solver mesh uses ng={mesh.ng}, requested ng={ng}")
-    mesh = _split_mesh(mesh, partitions)
+    mesh = split_mesh(mesh, partitions)
     adjacency, edges = _graph(mesh)
     if len(mesh.blocks) < partitions:
         raise ValueError(

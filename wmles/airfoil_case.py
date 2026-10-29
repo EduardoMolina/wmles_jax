@@ -223,8 +223,11 @@ def _build_grid_nmf(nodes, flipped):
 
 def build_case(grid_path="out/a_airfoil.p3d", *, mach=MACH_INF,
                reynolds=RE_CHORD, alpha_deg=ALPHA_DEG, T_inf=300.0,
-               p_inf=101_325.0, n_match=1, cfl=0.5, sgs="vreman"):
-    """Read the generated grid and build a wall-modelled A-airfoil solver case."""
+               p_inf=101_325.0, n_match=1, cfl=0.5, sgs="vreman", partitions=None):
+    """Read the generated grid and build a wall-modelled A-airfoil solver case.
+
+    `partitions` splits the assembled zones into at least that many work units (the
+    same split as the METIS preprocessing) before the solver is built."""
     grid_path = Path(grid_path)
     grid = read_plot3d(grid_path)
     if grid.ndim != 3 or any(nodes.shape[-1] < 4 for nodes in grid.nodes):
@@ -247,6 +250,9 @@ def build_case(grid_path="out/a_airfoil.p3d", *, mach=MACH_INF,
         },
         periodic=(("periodic_z", 2),),
     )
+    if partitions is not None:
+        from .plot3d_util import split_mesh
+        mesh = split_mesh(mesh, partitions)
     solver = Solver(
         mesh, props["gas"], Hybrid(), sgs=sgs, cfl=cfl,
     )

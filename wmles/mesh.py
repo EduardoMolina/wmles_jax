@@ -122,21 +122,19 @@ class Block:
 
 
 # --------------------------------------------------------------------------- exchange
-def exchange(dst, src, blkA, faceA, blkB, itf, kind, inplace=False):
-    """Fill the ghost layers of `dst` (block A, face faceA) from `src` (block B).
-    kind='cell' : cell-centred data, ghost layer m <- B's m-th cell off the interface
-    kind='node' : node data (adds itf.shift); the interface node plane is shared."""
+def exchange_slab(src, blkA, faceA, blkB, itf, kind, inplace=False):
+    """Ghost-layer data that block A's `faceA` receives from `src` (block B), already
+    remapped into A's index orientation.  It depends only on B's data and the
+    interface, so it can be extracted on B's device and shipped to A's device."""
     aA, sA = faceA
     aB, sB = itf.src_face
-    ng, nA, nB = blkA.ng, blkA.n[aA], blkB.n[aB]
-    lead = dst.ndim - 3
-    lib = np if isinstance(dst, np.ndarray) and inplace else xp
+    ng, nB = blkA.ng, blkB.n[aB]
+    lead = src.ndim - 3
+    lib = np if isinstance(src, np.ndarray) and inplace else xp
     if kind == "cell":
         lo_src = ng if sB == 0 else nB
-        lo_dst = ng + nA if sA == 1 else 0
     else:
         lo_src = ng + 1 if sB == 0 else nB
-        lo_dst = ng + nA + 1 if sA == 1 else 0
     S = src[sl(src.ndim, aB, slice(lo_src, lo_src + ng))]
     if sB == 1:
         S = lib.flip(S, axis=lead + aB)                        # -> m-order
@@ -148,11 +146,30 @@ def exchange(dst, src, blkA, faceA, blkB, itf, kind, inplace=False):
         S = S + itf.shift.reshape(3, 1, 1, 1)
     if sA == 0:
         S = lib.flip(S, axis=lead + aA)                        # m-order -> position
+    return S
+
+
+def insert_slab(dst, slab, blkA, faceA, kind, inplace=False):
+    """Write a slab from `exchange_slab` into the ghost layers of `dst` (block A, `faceA`)."""
+    aA, sA = faceA
+    ng, nA = blkA.ng, blkA.n[aA]
+    if kind == "cell":
+        lo_dst = ng + nA if sA == 1 else 0
+    else:
+        lo_dst = ng + nA + 1 if sA == 1 else 0
     idx = sl(dst.ndim, aA, slice(lo_dst, lo_dst + ng))
     if inplace:
-        dst[idx] = S
+        dst[idx] = slab
         return dst
-    return set_at(dst, idx, S)
+    return set_at(dst, idx, slab)
+
+
+def exchange(dst, src, blkA, faceA, blkB, itf, kind, inplace=False):
+    """Fill the ghost layers of `dst` (block A, face faceA) from `src` (block B).
+    kind='cell' : cell-centred data, ghost layer m <- B's m-th cell off the interface
+    kind='node' : node data (adds itf.shift); the interface node plane is shared."""
+    slab = exchange_slab(src, blkA, faceA, blkB, itf, kind, inplace)
+    return insert_slab(dst, slab, blkA, faceA, kind, inplace)
 
 
 def _reflect_nodes(X, blk, axis, side):

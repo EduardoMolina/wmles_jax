@@ -19,21 +19,29 @@ class ConstantMassFlux:
     def __init__(self, direction, target):
         self.dir, self.target = direction, target
 
+    def partial_sums(self, q, vol, blk):
+        """(sum rho*u_dir*V, sum V) over one block's interior; the global mean is their sum ratio."""
+        vol = blk.interior(vol)
+        return xp.sum(blk.interior(q[1 + self.dir]) * vol), xp.sum(vol)
+
+    def correction(self, num, den):
+        return self.target - num / den
+
+    def shift(self, q, delta):
+        """Add `delta` to rho*u_dir of one block, with the matching kinetic-energy change."""
+        z = xp.zeros_like(q[0])
+        mom = [z, z, z]
+        mom[self.dir] = z + delta
+        dE = (2.0 * q[1 + self.dir] * delta + delta ** 2) / (2.0 * q[0])
+        return q + xp.stack([z] + mom + [dE])
+
     def __call__(self, Q, geoms, blocks):
         num, den = 0.0, 0.0
         for q, g, b in zip(Q, geoms, blocks):
-            vol = b.interior(g.vol)
-            num = num + xp.sum(b.interior(q[1 + self.dir]) * vol)
-            den = den + xp.sum(vol)
-        delta = self.target - num / den
-        out = []
-        for q in Q:
-            z = xp.zeros_like(q[0])
-            mom = [z, z, z]
-            mom[self.dir] = z + delta
-            dE = (2.0 * q[1 + self.dir] * delta + delta ** 2) / (2.0 * q[0])
-            out.append(q + xp.stack([z] + mom + [dE]))
-        return tuple(out)
+            n, d = self.partial_sums(q, g.vol, b)
+            num, den = num + n, den + d
+        delta = self.correction(num, den)
+        return tuple(self.shift(q, delta) for q in Q)
 
 
 class Solver:
@@ -44,6 +52,8 @@ class Solver:
         self.scheme, self.cfl = scheme, cfl
         self.sgs = make_sgs(sgs, **(sgs_kwargs or {}))
         self.constraints, self.sources, self.bc_passes = tuple(constraints), tuple(sources), bc_passes
+        self.config = dict(sgs=sgs, cfl=cfl, sgs_kwargs=sgs_kwargs, constraints=self.constraints,
+                           sources=self.sources, bc_passes=bc_passes)
         self._rhs_j, self._dt_j = jit(self._rhs), jit(self._dt)
         self._rk1_j, self._rk2_j, self._rk3_j = (
             jit(self._rk1), jit(self._rk2), jit(self._rk3)
@@ -94,16 +104,17 @@ class Solver:
             rhs = rhs - (F[sl(F.ndim, d, slice(1, None))] - F[sl(F.ndim, d, slice(None, -1))])
         return rhs / blk.interior(geom.vol)
 
+    def _block_rhs_padded(self, ib, q, g):
+        """RHS (incl. sources) of one block with filled ghosts, zero-padded to the ghosted shape."""
+        ng = self.mesh.ng
+        r = self._block_rhs(ib, q, g)
+        for src in self.sources:
+            r = r + src(self.blocks[ib], q, g, self.gas)
+        return xp.pad(r, [(0, 0)] + [(ng, ng)] * 3)
+
     def _rhs(self, Q, geoms, time=0.0):
         Q = self.apply_bcs(Q, geoms, time)
-        ng = self.mesh.ng
-        out = []
-        for ib, (q, g) in enumerate(zip(Q, geoms)):
-            r = self._block_rhs(ib, q, g)
-            for src in self.sources:
-                r = r + src(self.blocks[ib], q, g, self.gas)
-            out.append(xp.pad(r, [(0, 0)] + [(ng, ng)] * 3))
-        return tuple(out)
+        return tuple(self._block_rhs_padded(ib, q, g) for ib, (q, g) in enumerate(zip(Q, geoms)))
 
     # ------------------------------------------------------------------ time stepping
     @staticmethod
@@ -132,23 +143,25 @@ class Solver:
             Q3 = constraint(Q3, self.geoms, self.blocks)
         return Q3
 
+    def _block_dt(self, ib, q, g):
+        """Largest stable dt of one block (ghosts filled)."""
+        gas, blk = self.gas, self.blocks[ib]
+        w, T = gas.cons_to_prim(q)
+        c = gas.sound_speed(T)
+        nu = max(4.0 / 3.0, gas.gamma / gas.Pr) * gas.mu(T) / w[0]
+        lam, lamv = 0.0, 0.0
+        for d in range(3):
+            Sd = g.S[d]
+            Sb = 0.5 * (Sd[sl(4, d, slice(0, -1))] + Sd[sl(4, d, slice(1, None))])
+            Sm = xp.sqrt(xp.sum(Sb * Sb, axis=0))
+            lam = lam + xp.abs(xp.sum(w[1:4] * Sb, axis=0)) + c * Sm
+            lamv = lamv + nu * Sm ** 2 / g.vol
+        return xp.min(blk.interior(self.cfl / ((lam + 4.0 * lamv) / g.vol)))
+
     def _dt(self, Q, geoms, time=0.0):
-        gas = self.gas
         Q = self.apply_bcs(Q, geoms, time)
-        dts = []
-        for blk, q, g in zip(self.blocks, Q, geoms):
-            w, T = gas.cons_to_prim(q)
-            c = gas.sound_speed(T)
-            nu = max(4.0 / 3.0, gas.gamma / gas.Pr) * gas.mu(T) / w[0]
-            lam, lamv = 0.0, 0.0
-            for d in range(3):
-                Sd = g.S[d]
-                Sb = 0.5 * (Sd[sl(4, d, slice(0, -1))] + Sd[sl(4, d, slice(1, None))])
-                Sm = xp.sqrt(xp.sum(Sb * Sb, axis=0))
-                lam = lam + xp.abs(xp.sum(w[1:4] * Sb, axis=0)) + c * Sm
-                lamv = lamv + nu * Sm ** 2 / g.vol
-            dts.append(xp.min(blk.interior(self.cfl / ((lam + 4.0 * lamv) / g.vol))))
-        return xp.min(xp.stack(dts))
+        return xp.min(xp.stack([self._block_dt(ib, q, g)
+                                for ib, (q, g) in enumerate(zip(Q, geoms))]))
 
     def max_dt(self, Q, time=0.0):
         return self._dt_j(Q, self.geoms, time)
@@ -167,16 +180,29 @@ class Solver:
             for key, (tau, qw) in self._wall_stats_j(Q, self.geoms).items()
         }
 
+    def _block_wall_stats(self, ib, q, g):
+        blk = self.blocks[ib]
+        w, T = self.gas.cons_to_prim(q)
+        out = {}
+        for (a, s), bc in blk.faces.items():
+            if isinstance(bc, WallModel):
+                _, tau, qw = bc.wall_flux(w, T, blk, g, self.gas, a, s)
+                out[(blk.name, "ijk"[a] + ("min", "max")[s])] = (tau, qw)
+        return out
+
     def _wall_stats(self, Q, geoms):
         Q = self.apply_bcs(Q, geoms)
         out = {}
-        for ib, (blk, q, g) in enumerate(zip(self.blocks, Q, geoms)):
-            w, T = self.gas.cons_to_prim(q)
-            for (a, s), bc in blk.faces.items():
-                if isinstance(bc, WallModel):
-                    _, tau, qw = bc.wall_flux(w, T, blk, g, self.gas, a, s)
-                    out[(blk.name, "ijk"[a] + ("min", "max")[s])] = (tau, qw)
+        for ib, (q, g) in enumerate(zip(Q, geoms)):
+            out.update(self._block_wall_stats(ib, q, g))
         return out
+
+    def conserved_totals(self, Q):
+        """Volume integrals of the 5 conserved variables over all block interiors."""
+        total = 0.0
+        for blk, q, g in zip(self.blocks, Q, self.geoms):
+            total = total + xp.sum(blk.interior(q) * blk.interior(g.vol), axis=(1, 2, 3))
+        return np.asarray(total)
 
     def wall_loads(self, Q, moment_center=(0.0, 0.0, 0.0)):
         """Integrate fluid-on-wall force and moment for each WallModel face.
