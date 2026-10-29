@@ -452,12 +452,8 @@ def generate_four_block_mesh(
     trailing_edge = _transfinite(
         bottom=te_inner,
         top=te_outer,
-        left=_geometric_line(
-            te_inner[0], te_outer[0], te_divisions, te_growth
-        ),
-        right=_geometric_line(
-            te_inner[-1], te_outer[-1], te_divisions, te_growth
-        ),
+        left=te_inner[0] + te_offsets[:, np.newaxis] * te_direction,
+        right=te_inner[-1] + te_offsets[:, np.newaxis] * te_direction,
     )
 
     # Block 3: outer C-shaped tunnel around the airfoil and TE blocks.
