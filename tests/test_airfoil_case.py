@@ -29,7 +29,7 @@ class AirfoilCaseTests(unittest.TestCase):
         self.assertEqual(props["alpha_deg"], ALPHA_DEG)
         self.assertGreater(props["chord"], 0.0)
         self.assertGreater(props["prim_inf"][1], 0.0)
-        self.assertLess(props["prim_inf"][2], 0.0)
+        self.assertGreater(props["prim_inf"][2], 0.0)
 
     def test_builds_wall_modelled_periodic_four_block_case(self):
         blocks = generate_four_block_mesh(

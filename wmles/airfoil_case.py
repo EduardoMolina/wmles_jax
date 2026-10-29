@@ -50,10 +50,10 @@ def flow_properties(gas=None, mach=MACH_INF, reynolds=RE_CHORD,
     nu_inf = mu_inf / rho_inf
     chord = reynolds * nu_inf / U_inf
     alpha = np.deg2rad(alpha_deg)
-    # Positive geometric incidence corresponds to a downward free-stream
-    # velocity component in airfoil-fixed coordinates.
+    # Positive geometric incidence corresponds to a positive transverse
+    # free-stream velocity component in airfoil-fixed coordinates.
     prim_inf = np.array([
-        rho_inf, U_inf * np.cos(alpha), -U_inf * np.sin(alpha), 0.0, p_inf
+        rho_inf, U_inf * np.cos(alpha), U_inf * np.sin(alpha), 0.0, p_inf
     ])
     return {
         "gas": gas, "mach": mach, "reynolds": reynolds,
