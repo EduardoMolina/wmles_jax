@@ -181,7 +181,7 @@ def spline_refine_contour(
         spacing = np.array([0.0, te_parameter])
     else:
         growth = te_ratio ** (1.0 / (te_new_segments - 1))
-        widths = growth ** np.arange(te_new_segments + 1, dtype=float)
+        widths = growth ** np.arange(te_new_segments, dtype=float)
         spacing = np.concatenate(([0.0], np.cumsum(widths / widths.sum())))
         spacing *= te_parameter
 
