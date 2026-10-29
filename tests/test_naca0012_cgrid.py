@@ -85,7 +85,7 @@ class Naca0012CGridTests(unittest.TestCase):
         self.assertLess(np.min(contour[:, 0]), 1.0e-3)
 
     def test_le_refinement_points_survive_respline(self):
-        raw = read_airfoil_coordinates("data/Airfoils/a-airfoil.dat")
+        raw = read_airfoil_coordinates(Path(__file__).parent / "data" / "a-airfoil.dat")
         initial_count = 257
         contour = spline_refine_contour(
             raw,
