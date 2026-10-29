@@ -1,1 +1,2 @@
 pyvista>=0.43
+metis>=0.2

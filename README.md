@@ -301,6 +301,23 @@ METIS_DLL="$(brew --prefix metis)/lib/libmetis.dylib" \
 
 Install the native library first if needed with `brew install metis`.
 
+The Phase 2 preprocessor assembles the OAT15a solver mesh, propagates
+structured split planes across oriented interfaces, runs a weighted METIS
+partition, and writes a versioned JSON ownership manifest. On macOS, provide
+the native library explicitly:
+
+```bash
+METIS_DLL="$(brew --prefix metis)/lib/libmetis.dylib" \
+  conda run -n pyvista python -m wmles.plot3d_util \
+  out/oat15a_L1.p3d out/oat15a_L1.partitions.json --partitions 8
+```
+
+The manifest reports every prepared solver block exactly once, cell-count
+vertex weights, interface face weights, cross-partition interfaces, and
+per-partition loads. It is preprocessing metadata only; it does not select
+JAX devices or implement runtime halo exchange. On Linux, set `METIS_DLL` to
+the host's native `libmetis.so` (or configure the equivalent loader path).
+
 **Verified (NumPy backend, in the sandbox), on the real L5 grid and synthetic cases**
 * Plot3D round trips: formatted/unformatted, LE/BE, float32/64, with/without iblank; 2-D read.
 * Interface handling: two blocks with a transposed + flipped neighbour (Swap=TRUE, reversed range) reproduce
