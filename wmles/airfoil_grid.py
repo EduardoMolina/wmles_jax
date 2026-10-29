@@ -747,6 +747,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         te_refinement_ratio=args.te_refinement_ratio,
         tunnel_smoothing=args.tunnel_smoothing,
     )
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     if args.output.suffix.lower() in (".vtm", ".vtmb", ".vtkhdf"):
         write_vtk(
             args.output, list(blocks.values()), span_length=args.span_length,
