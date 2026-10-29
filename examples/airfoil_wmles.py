@@ -83,7 +83,10 @@ def main():
                   f"dt={float(dt):.3e} rho_min={rho_min:.6g} "
                   f"ctu={ctu:.6f} "
                   f"step_time={time.perf_counter() - start:.3f}s")
-            wall_writer.write(step, time_elapsed, solver.wall_loads(state))
+            wall_writer.write(
+                step, time_elapsed,
+                solver.wall_loads(state, moment_center=wall_writer.moment_center),
+            )
 
 
 if __name__ == "__main__":
