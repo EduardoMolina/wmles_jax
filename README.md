@@ -14,14 +14,102 @@ wmles/
   io_vtk.py      VTU/PVD export and restart loading via pyvista (optional dependency)
   io_wall_loads.py CSV export of integrated wall forces and moments
   channel5200.py UMD wall-model validation case setup: grid table, flow properties, IC, plane/time stats
+  smooth_ramp.py UMD smooth-ramp grid-6 WMLES mesh and solver setup
   plot3d.py      Plot3D multiblock reader/writer (formatted + unformatted, endianness/precision/iblank auto-detect)
   nmf.py         Neutral Map File parser, span re-discretization, topology builder with automatic block splitting
 examples/channel_wmles.py   Ma_b=0.3 channel, 2 blocks in x, wall-modelled walls; 2nd CLI arg = VTU output stride
 examples/channel_ReTau5200.py  UMD Re_tau~5200 channel validation case driver (see below)
+examples/smooth_ramp.py        UMD smooth-ramp case driver (see below)
 examples/airfoil_p3d.py     load Plot3D + NMF airfoil grid, build mesh, optional short run / VTU output
 tests/data/                 NASA TMBWG airfoil near-wake grid L5 (nak_a_ff_500c_2zn_L5 .p3dfmt/.nmf)
 tests/                      multiblock/orientation, free-stream, wall model, Sod tube
 ```
+
+## Smooth-ramp setup
+The UMD smooth-ramp validation case is described at
+https://wmles.umd.edu/smooth-ramp/. `wmles/smooth_ramp.py` builds a single-block
+WMLES setup using the three `baurle2021wsm_grid6_*.txt` distributions in `tests/data/`:
+the streamwise spacing at the wall and the upstream/downstream wall-normal distributions.
+It maps the upstream wall at `y/L=0.22` smoothly to the downstream wall at `y/L=0`
+using the published quintic ramp, with the supplied `y/L=0.74` top boundary. The
+default domain is `x/L=-0.76..4`, the periodic span is `0.288L`, and the physical scale
+is set from `Re_L=667,000` and `Ma_inf=0.2`. The provided streamwise grid is extended
+outside `x/L=-0.05..1.05` using constant end spacing; the spanwise distribution is
+uniform because no spanwise grid file is included.
+
+The bottom wall uses the equilibrium wall model, the top uses slip, the span is periodic,
+and the outflow is characteristic. The inlet and initial state use the supplied DNS
+profile at `x/L=-0.76` in `tests/data/smooth_ramp_dns/`. A deterministic Fourier-mode
+synthetic field applies the profile's `uu`, `vv`, `ww`, and `uv` stresses; its default
+correlation scales are `(0.1, 0.02, 0.03)L` in streamwise, wall-normal, and spanwise
+directions. Override these and the phase seed with `--inflow-scales LX LY LZ` and
+`--inflow-seed`. The DNS data contain only means and second moments, not time histories
+or correlation lengths, so this generator matches those local moments statistically;
+it cannot reproduce DNS temporal coherence. The missing `uw` and `vw` covariances are
+assumed zero.
+
+An optional-by-CLI sponge source is enabled by default over the last `1L` before
+outflow (or from `--sponge-start x/L`), with maximum rate `U_inf/L`. It smoothly damps
+departures from each instantaneous spanwise mean and therefore preserves that mean
+profile. Spanwise-uniform disturbances are intentionally left to the characteristic
+outflow condition. Use `--sponge-strength` to change the maximum rate or `--no-sponge`
+to disable it. Physical time is passed to inflow boundary fills at the SSP-RK stage
+times, keeping the generated field deterministic and JIT-compatible. The gas uses the
+project's Sutherland viscosity model; the site notes constant viscosity is also
+reasonable at this low Mach.
+
+```bash
+python -m examples.smooth_ramp                         # build/report grid only
+python -m examples.smooth_ramp --steps 10 --nz 16     # short solver smoke run
+python -m examples.smooth_ramp --x-min -0.05 --x-max 1.05 --nz 4  # smaller setup check
+python -m examples.smooth_ramp --inflow-scales 0.1 0.02 0.03 --sponge-start 3.0
+python -m examples.smooth_ramp --steps 100 --vtu 20   # optional ParaView output
+```
+
+## A-airfoil grid
+`wmles/airfoil_grid.py` generates a four-block Plot3D or VTK mesh from the
+provided A-airfoil contour in `tests/data/a-airfoil.dat`. The default periodic
+span is `0.0481c`, with 40 uniformly spaced spanwise cells
+(`Delta z = 0.0012025c`).
+The span is deliberately an integer multiple of the requested spacing so every
+spanwise cell has the same width.
+The tunnel block defaults to cross-stream spacing smoothing over 10% of its
+streamwise index range. This blends each line's normalized arclength spacing
+with a Gaussian-smoothed distribution along the block, fading to zero at the
+block ends to retain exact interface nodes. A gentler normal-projection blend
+also avoids folded cells at the tunnel corners. Use `--tunnel-smoothing 0` to
+disable spacing smoothing.
+
+```bash
+python -m wmles.airfoil_grid out/a_airfoil.p3d
+python -m wmles.airfoil_grid out/a_airfoil.vtm
+python -m wmles.airfoil_grid out/a_airfoil.p3d --tunnel-smoothing 0.15
+python -m wmles.airfoil_grid out/a_airfoil.p3d --tunnel-smoothing 0
+```
+
+`wmles/airfoil_case.py` sets up the published A-airfoil reference conditions
+from the [Tamaki-Kawai database README](https://www.klab.mech.tohoku.ac.jp/database/2022TamakiAIAAJ/README.txt):
+Mach 0.15, `Re_c = 1.0e7`, and 13.3-degree incidence. It applies a characteristic
+far-field, spanwise periodicity, and an adiabatic equilibrium wall model on the airfoil.
+Because the database README does not specify dimensional pressure or temperature,
+the default SI scale assumes standard ambient air at 300 K and 101325 Pa; override
+these using `--temperature` and `--pressure`. The adiabatic wall treatment is a
+WMLES modeling assumption, not a thermal condition stated in the database README.
+
+```bash
+python -m examples.airfoil_wmles out/a_airfoil.p3d          # assemble/report setup
+python -m examples.airfoil_wmles out/a_airfoil.p3d --steps 10
+python -m examples.airfoil_wmles out/a_airfoil.p3d --steps 100 --vtu 20
+```
+
+The example reconstructs the four-block interfaces from matching grid faces.
+The default generated grid has 40 spanwise cells; the solver requires at least
+three spanwise cells for its ghost layers. The cited database is a wall-resolved
+LES reference; this driver applies WMLES boundary treatment at those published
+flow conditions and is not itself a reproduction of the database solution.
+The solver compiles the residual and SSP-RK update stages separately, rather
+than asking XLA to compile the entire multiblock RK step as one graph. The
+first step still compiles these kernels for the selected device and grid shapes.
 
 ## Re_tau = 5200 channel validation case
 `wmles/channel5200.py` sets up the UMD wall-model validation case
@@ -50,8 +138,12 @@ by Lee & Moser (2015) with a compressible solver at bulk Mach 0.2:
 
 ```bash
 python -m examples.channel_ReTau5200 [level 1-4] [ar 1|2] [nsteps] [n_warmup] [out_every]
+python -m examples.channel_ReTau5200 --scheme kep2 --n-match 2
 python -m examples.channel_ReTau5200 --tiny         # cheap CPU smoke test at a much lower Re
 ```
+Choose `--scheme hybrid` (default), `kep2`, `kep4`, or `muscl-hllc`. `--n-match`
+selects the wall-normal cell sampled by the wall model, counted from each wall
+(default: first cell centre, `1`).
 When `out_every` is positive, the driver writes VTU/PVD snapshots and a
 `forces_moments.csv` sample at that stride (plus the final step when it falls between
 strides). The CSV is still written at the final step when `out_every` is zero; zero
@@ -221,3 +313,8 @@ print(describe(mesh))
 * Only Cartesian-orientation matching interfaces (conforming, 1:1 nodes); no rotational periodicity / hanging nodes.
 * Ideas: TBLE/ODE wall model, dynamic Smagorinsky, WENO5, `jax.pmap`/`shard_map` over blocks, checkpointing (orbax),
   differentiable wall model calibration (everything is JAX-differentiable except the fori_loop Newton safeguards).
+
+## Developer
+```bash
+JAX_LOG_COMPILES=1  python -m examples.channel_ReTau5200
+```
