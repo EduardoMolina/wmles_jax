@@ -27,6 +27,7 @@ def _fill_mirror(q, blk, geom, axis, side, fn):
 
 class BC:
     flux_override = False
+    is_wall = False          # True: the face is a solid wall (wall distance, turbulence models)
 
     def fill(self, q, blk, geom, gas, axis, side):
         raise NotImplementedError
@@ -49,6 +50,7 @@ class SlipWall(BC):
 
 class NoSlipWall(BC):
     """Resolved (wall-resolved LES) no-slip wall.  T_wall=None -> adiabatic."""
+    is_wall = True
 
     def __init__(self, T_wall=None):
         self.T_wall = T_wall
@@ -134,6 +136,7 @@ class WallModel(BC):
     low-order schemes).
     """
     flux_override = True
+    is_wall = True
 
     def __init__(self, model, T_wall=None, n_match=1):
         self.model, self.T_wall, self.n_match = model, T_wall, n_match

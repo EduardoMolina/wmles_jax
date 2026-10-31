@@ -3,6 +3,7 @@ from .gas import Gas
 from .mesh import Block, Mesh
 from .bc import SlipWall, NoSlipWall, Dirichlet, CharacteristicFarfield, Extrapolate, WallModel
 from .wall_model import EquilibriumWallModel
+from .wall_distance import attach_wall_distance
 from .schemes import KEP, MUSCLHLLC, Hybrid
 from .solver import Solver, ConstantMassFlux
 from .plot3d import read_plot3d, write_plot3d

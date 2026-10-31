@@ -41,6 +41,8 @@ class Geom(NamedTuple):
     xc: object       # (3,Ni,Nj,Nk) cell centres
     S: tuple         # 3 arrays; S[d] has shape (3, ..N_d+1..) face area vectors (+d dir)
     xf: tuple        # 3 arrays, face centres, same shapes as S
+    delta_max: object = None   # (Ni,Nj,Nk) largest cell extent (max over d of the opposite-face-centre distance)
+    dist: object = None        # (Ni,Nj,Nk) distance to the nearest wall; set by wall_distance.attach_wall_distance
 
 
 # --------------------------------------------------------------------------- geometry
@@ -71,6 +73,14 @@ def compute_geometry(X):
     xc = sum(X[:, a:Ni + a, b:Nj + b, c:Nk + c]
              for a, b, c in product((0, 1), repeat=3)) / 8.0
     return vol, xc, (Si, Sj, Sk), (xi, xj, xk)
+
+
+def cell_extent_max(xf):
+    """Largest cell extent: max over the three directions of the distance between the
+    centres of the two opposite faces (the Delta_max of DES)."""
+    ext = [np.sqrt(np.sum((x[sl(4, d, slice(1, None))] - x[sl(4, d, slice(None, -1))]) ** 2, axis=0))
+           for d, x in enumerate(xf)]
+    return np.maximum(np.maximum(ext[0], ext[1]), ext[2])
 
 
 # --------------------------------------------------------------------------- blocks
@@ -236,7 +246,8 @@ class Mesh:
             if vol.min() <= 0:
                 raise ValueError(f"block {b.name}: non-positive cell volume (left-handed or folded grid)")
             b.geom = Geom(asarray(vol), asarray(xc),
-                          tuple(asarray(s) for s in S), tuple(asarray(x) for x in xf))
+                          tuple(asarray(s) for s in S), tuple(asarray(x) for x in xf),
+                          delta_max=asarray(cell_extent_max(xf)))
             geoms.append(b.geom)
         self.geoms = tuple(geoms)
         return self
