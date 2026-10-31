@@ -1,0 +1,186 @@
+I read the solver, SGS, viscous, BC, wall-model, scheme, mesh, backend and sharding modules, plus `plan.md` and the README. This is a plan only; nothing was changed.
+
+## What the code looks like today (relevant to both features)
+
+- **State.** `Q` is a tuple of per-block `(5, Ni, Nj, Nk)` arrays that include ghost cells. Halo exchange, RK stages and block sharding are all generic in the leading axis. `solver.py` is the reference path and `sharding.py` is a per-block twin that reuses its hooks (`_block_rhs_padded`, `_block_dt`, `apply_bcs`).
+- **Turbulence closure.** `make_sgs` in `sgs.py` returns `f(grad_u, delta, rho) -> mu_t`, with `delta = V^(1/3)`. It is purely algebraic, so SA does not fit that signature. SA needs a transported variable, wall distance, Δ_max and a source term.
+- **Viscous flux.** `viscous_flux` in `viscous.py` already takes `mu_eff` and `k_eff`, so SA's μ_t plugs in without changes. It is hard-wired to the four variables `[u,v,w,T]`, so scalar diffusion needs its own function.
+- **Hard-coded 5-variable assumptions.** `Gas.cons_to_prim` and `prim_to_cons` build 5-row arrays. The BC fills in `bc.py` use `w[:1]` and `w[4:5]`, and the `Dirichlet` and `CharacteristicFarfield` fills reshape with `(5,)`. `ConstantMassFlux`, `io_vtk` and the `init_state` callers also assume five rows.
+- **Wall BCs.** `WallModel` uses slip ghost cells plus a flux override. `NoSlipWall` mirrors the state. Neither has any wall-distance field; `WallModel.wall_flux` only computes `h` at the match point.
+- **Time stepping.** It is explicit SSP-RK3 with a CFL from convective and viscous spectral radii. The smoke run in `plan.md` gives dt ≈ 1e-7 s, so wall-normal stiffness is the bottleneck.
+- **Enablers for JFNK.**
+  - float64 is on.
+  - `_rhs(Q, geoms, time)` is a pure function, and the RHS is already divided by volume.
+  - `Solver.rhs` and `DistributedSolver.rhs` share one signature, so a matrix-free operator can be written against either.
+- **JFNK obstacles.**
+  - The hybrid scheme's non-smooth pieces are `where`-based HLLC branches, limiters, the Ducros sensor and the positivity fallback.
+  - The wall-model `fori_loop` Newton uses `clip` safeguards.
+  - `DistributedSolver` orchestrates halos in Python, so a single `jax.jit` or `lax` GMRES cannot wrap it.
+  - The central KEP scheme is non-dissipative, which makes it a poor basis for a preconditioner.
+
+---
+
+## Part A — Spalart–Allmaras and SA-DDES
+
+### A0. Design decisions (assumed unless you object)
+
+1. **Variable layout:** append `ρν̃` as `q[5]`, so `Q` becomes `(6, …)` when SA is on. Halo exchange, RK, sharding and restart then work unchanged. The 5-variable path stays bit-identical when SA is off.
+   - `cons_to_prim` and `prim_to_cons` keep operating on `q[:5]`, and the solver splits off `q[5:]`.
+   - The alternative, a second pytree field, would duplicate halo and sharding code.
+2. **Turbulence abstraction:** new `wmles/rans.py` (or `turbulence.py`) with a `SpalartAllmaras(variant="noft2", des=None | "ddes")` object. It exposes `n_scalars`, `mu_t(...)`, `source(...)`, `diffusion_flux(...)`, `scalar_bc(...)` and `init(...)`. `Solver(..., turbulence=...)` takes it, and the existing `sgs=` argument stays as the LES closure.
+3. **Model variants:**
+   - SA-noft2 with the Edwards–Chandra Ŝ limiter (S̃ ≥ 0.3 Ω).
+   - **SA-neg** (Allmaras 2012) negative-ν̃ treatment. This is needed for robustness and is mandatory for the JFNK phase.
+   - DDES (Spalart 2006): `d̃ = d − f_d·max(0, d − C_DES·Δ)`, `f_d = 1 − tanh[(8 r_d)³]`, C_DES = 0.65.
+   - Δ options: Δ_max (default), Δ_ω (vorticity-aligned, better for the spanwise-periodic airfoil), and the SLA option later.
+
+### A1. Geometry: wall distance and Δ_max
+- Add wall distance `d` (cell-centred, ghosts included) and `delta_max` to `Geom` in `mesh.py`, as optional fields. `Geom` is a `NamedTuple`, so `device_put` in sharding still works.
+- New `wmles/wall_distance.py`, computed on the host once, before sharding:
+  - Collect wall faces from all blocks whose BC is a wall (`NoSlipWall` or `WallModel`).
+  - Use a `scipy.spatial.cKDTree` (scipy is already used in `airfoil_grid.py`) on face centres.
+  - Refine candidates with point-to-quad distance, so coarse tangential spacing doesn't bias `d` near the wall.
+  - Add periodic-shift copies for periodic spans.
+- Tests: flat-plate `d = y` exactly, and a multi-block split gives the same `d` as the unsplit mesh.
+
+### A2. Scalar transport and BCs
+- **Convection:** use the mass flux from the existing scheme. After `self.scheme(...)`, set `F[5] = F[0]·ν̃_upwind` with a limited, second-order upwind face value. This works with KEP, MUSCL or Hybrid without touching them.
+- **Diffusion:** a new `scalar_diffusion_flux` in `viscous.py`, reusing the compact face-gradient correction. It computes `(1/σ)(μ+ρν̃)∇ν̃·S`. The `cb2 ρ|∇ν̃|²/σ` term goes in the source.
+- **BC hooks:** add `scalar_ghost(...)` to the `BC` base class, with these behaviours.
+
+  | BC | ν̃ ghost value |
+  |---|---|
+  | `NoSlipWall` | `−ν̃_interior`, so ν̃_face = 0 |
+  | `SlipWall`, `Extrapolate` | copy |
+  | `CharacteristicFarfield` / `Dirichlet` | ν̃∞ (χ ≈ 3–5) for inflow, extrapolate for outflow |
+  | `Interface` | free via the generic halo exchange |
+
+- Fix the `(5,)` reshapes and the `w[:1]` / `w[4:5]` slicing in `bc.py` so the 6th row passes through.
+- **Wall-model case (WMLES):**
+  - Keep `WallModel`'s flux override for τ_w and q_w.
+  - Impose the near-wall ν̃ from the wall-model u_τ, for example ν̃ = κ u_τ y at the match cell. This is separate and optional (A6), because the DDES buffet grids may be wall-resolved.
+
+### A3. Solver integration
+- In `_block_rhs`:
+  1. Compute ν̃ and `fv1` from `q[5]/ρ`.
+  2. Set `mut = ρ ν̃ fv1`, replacing the SGS `mut` when SA is on.
+  3. Add the SA source and the scalar flux rows to `rhs`.
+- In `_block_dt`, add the SA source and diffusion stiffness limit.
+- Positivity: clip or SA-neg after each RK stage. Add a per-stage hook in `_rk1/2/3` and the sharding `_rk*_blk` kernels.
+- Move SGS-versus-SA selection and the Ducros-style shield into the hybrid scheme (A5).
+- Update `sharding.py`: `init_state`, `_block_totals` and `conserved_totals`.
+- Update `io_vtk.py` to write `nut_tilde`, `mu_t`, `d` and `f_d`.
+- Restart: the 6th component should round-trip through the VTU/PVD files.
+- Add the SA initial condition to `airfoil_case.py` and `examples/airfoil_wmles.py` (`--turbulence sa|sa-ddes`).
+
+### A4. Validation ladder
+1. **Unit tests.** SA functions and limits, `f_d → 0` in the boundary layer and `f_d → 1` in separated flow, and equivalence with the 5-variable path when `ν̃ ≡ 0`.
+2. **Regression.** 2-block split versus single-block RHS (extend `test_multiblock`), and free-stream preservation including ν̃. Also `test_sharding` bit-equivalence with 6 variables, and `d` and `Δ_max` agreement across splits.
+3. **Physics.**
+   - Zero-pressure-gradient flat plate: Cf against NASA TMR SA references.
+   - NACA0012 with the existing `test_naca0012_cgrid.py` grids: Cl and Cd.
+   - Channel DDES: `examples/channel_wmles.py`.
+   - Then the OAT15a buffet.
+4. **Numerics for DDES.** Add a switch that blends central and upwind using `f_d` and the Ducros sensor, because the KEP scheme is non-dissipative in RANS regions. This is the main risk for the grey zone.
+
+### A5/A6 (later)
+- IDDES, SLA Δ, and WM-DDES wall treatment.
+
+---
+
+## Part B — Implicit JFNK operator
+
+### B0. Formulation
+- Solve `R(Q) = (Q − Qⁿ)/Δt − rhs(Q) = 0`, matching the per-volume residual the solver already computes.
+- Time integration: backward Euler and BDF2, with a pseudo-time (CFL-ramped) continuation for steady RANS and dual-time stepping for unsteady DDES.
+- Where the speedup comes from: wall-normal stiffness in wall-resolved cells. Implicit time steps are limited only by the convective CFL in the LES region, which could be about 100× larger than today's dt of 1e-7 s. In isotropic LES regions the benefit is smaller.
+
+### B1. Matrix-free operator (`wmles/implicit.py`)
+- Start with **finite-difference J·v** `(R(Q+εv) − R(Q))/ε`, since float64 is on.
+  - It works unchanged with both `Solver.rhs` and `DistributedSolver.rhs`, and with the existing halo and BC machinery.
+  - It has no dependence on JAX AD through non-smooth parts.
+- Later: an exact **`jax.jvp`** per block kernel, with frozen limiter, sensor and wall-model derivatives (`stop_gradient`) to avoid noise from non-smooth pieces. For the wall-model solve, add a `custom_jvp` using the implicit-function theorem rather than differentiating through `fori_loop`.
+- API: `ImplicitIntegrator(solver, scheme="bdf1"|"bdf2", ...)` with `.advance(Q, dt, time)`, so the existing drivers don't change.
+
+### B2. Krylov solver (`wmles/krylov.py`)
+- Pytree GMRES(m), restarted, with vectors as tuples of per-block arrays.
+- Use a Python-level loop for the distributed path, because the halo exchange is orchestrated in Python and can't live inside one `jit`. Dot products and norms reduce per-block partials on device 0, mirroring `_reduce` in `sharding.py`.
+- Single-device path: optionally `jax.scipy.sparse.linalg.gmres` under `jit`.
+- Inexact Newton with Eisenstat–Walker forcing, so each Newton iteration solves the linear system only as accurately as it needs.
+- Memory is manageable: about 160 MB per Krylov vector on a 3.4M-cell, 6-variable case, so m = 20–30 fits when split across 8 devices.
+
+### B3. Preconditioner (the real work)
+Build the preconditioner from a **first-order upwind Jacobian**, not the central or KEP scheme.
+1. **Point-block Jacobi.** The diagonal block is `V/Δt + Σ|A_f|`, obtained via `jax.jacfwd` of a Rusanov or HLLC-type flux, plus an analytic or `jacfwd` SA source Jacobian. It is local to each block, so there are no halo needs. Start here for correctness.
+2. **Line-implicit block-tridiagonal solve** along the wall-normal axis, using `lax.scan` or an associative scan, with `vmap` over lines. This is what actually handles y+ ≈ 1 stretching.
+   - Treat block interfaces as additive Schwarz (Jacobi coupling), which parallelises naturally over METIS blocks.
+   - The wall-normal axis comes from each block's wall-BC face.
+3. **Lagged preconditioner:** refresh every N Newton iterations.
+
+### B4. Robustness
+- Positivity-preserving Newton update: cap relative changes in ρ and p, and use SA-neg for ν̃.
+- Pseudo-time CFL ramp (SER) and backtracking on `‖R‖`.
+- Constraints like `ConstantMassFlux` stay as post-step operations at first.
+- Make the wall-model `utau` Newton safeguards differentiable-friendly.
+
+### B5. Validation and performance
+- Linear check: matrix-free J·v against a dense `jacfwd` on a tiny grid.
+- Check that backward Euler with a tiny Δt reproduces explicit RK3.
+- Check that a steady SA flat plate or NACA0012 converges by about 4 orders in residual.
+- `DistributedSolver` equivalence: the implicit step on 1 device versus 8 virtual CPU devices (extend `tests/test_sharding.py`).
+- Performance gate on L1: wall-time per physical time versus explicit, with the compile-time cost reported separately. Include GMRES iterations per Newton step and communication fraction on 8 GPUs.
+
+---
+
+## Suggested order
+1. A0 and A1: wall distance, `Geom` fields, tests.
+2. A2 and A3: SA-RANS on one device, then flat plate and NACA0012.
+3. DDES (`d̃`, Δ_max, shielding), then channel DDES.
+4. 6-variable sharding, restart and VTU, then multi-block and sharding regression.
+5. B1 and B2: FD matrix-free GMRES with a point-block preconditioner on the explicit-equivalent test.
+6. B3 line-implicit preconditioner, B4 robustness, and steady SA convergence.
+7. Dual-time DDES on OAT15a, plus the exact `jvp` variant if FD proves noisy or slow.
+
+## Open questions that change the plan
+- Should the SA/DDES OAT15a runs be **wall-resolved** (y+ ≈ 1, `NoSlipWall`) or **wall-modelled** on the current L1 grid? This decides whether A6 is needed. It should support first support y+=1, DDES with wall funcition can be implemented later.  
+- Is SA mainly for steady RANS initialisation or for unsteady DDES? Both.
+- Is the `(6, …)` state layout acceptable, or must the 5-variable layout stay untouched? The 5-variable layout stay untouched since this will be a WMLES / DDES solver.
+- Should DDES numerics use the existing hybrid scheme, or should I add an `f_d`-blended central/upwind scheme from the start? Start with the existing scheme.
+
+To implement any of this, switch to an agent that can edit files.
+
+## Wall distance issue.
+The current default, exact=True in wall_distance.py, is the expensive path. It evaluates 24 candidates × 2 triangles per cell through a long chain of np.where calls, and re-searches with 4× more candidates for uncertified points.
+
+### Poisson wall distance (Tucker)
+Solve ∇²φ = −1 with φ = 0 on walls and zero gradient elsewhere. Then:
+
+d = −|∇φ| + √(|∇φ|² + 2φ)
+
+This is exact for a planar wall. In 1D, φ = c·y − y²/2 gives |∇φ|² + 2φ = c², so d = y. For curved walls and corners the error is a few percent. It fits this code well:
+
+- Same machinery: it is a finite-volume Laplacian built from geom.S and geom.vol.
+- Interfaces: block interfaces, periodic spans and sharding reuse the existing halo exchange.
+- Solver: it needs a CG/Krylov solver, which the JFNK work needs anyway.
+
+Its weak points:
+
+- Stretched grids. At y+≈1 the grid is very anisotropic, and plain Jacobi-preconditioned CG converges slowly (hundreds to thousands of iterations). It needs a wall-normal line-implicit preconditioner or multigrid. Each iteration is cheap on GPU, and the tolerance can be loose.
+- Ghost cells. They need a mirrored, unsigned value at wall faces.
+- Accuracy. The error is largest near the leading edge, the blunt trailing edge and concave corners.
+- Reduction. A cross-device dot product is needed for the multi-GPU solve.
+
+### What matters for SA/DDES
+Exactness only matters in a thin band near the wall. That is where f_v2, f_w, r_d and the RANS side of the DDES switch live. Far from the wall, d_tilde is set by C_DES·Δ_max, so a few percent error in d is irrelevant. So I would not use one method for every cell.
+
+### Proposed order
+1. Band-limited exact search (no solver needed):
+    - Compute a cheap approximate distance for all cells with cKDTree.query(k=1), which takes seconds for millions of points.
+    - Use the nearest-centre value as an upper bound.
+    - Refine exactly (small k, with certification) only for cells within a band of the wall, for example d_approx < 10 × reach or the first N wall-normal cells. That is about 10% of the cells.
+    - Far cells keep the approximate value, whose error is bounded by reach.
+2. Poisson/Tucker as a second backend, selectable via method="poisson". It is worth adding once the Krylov solver from the implicit work exists, and it is the only option that scales to a CRM-sized mesh on the GPUs. I would validate it against the exact search on the flat plate, the bump and the sphere, and report its error as a function of d/δ.
+3. A Poisson-plus-exact-band hybrid if the Poisson accuracy near the wall proves insufficient.
+Step 1 is probably enough for the OAT15a grid and removes the cost problem without a new solver. Poisson is a larger project that overlaps with the JFNK work. If you want me to implement step 1 first, switch to an agent that can edit files and run tests.
+
+Step 1 is probably enough for the OAT15a grid and removes the cost problem without a new solver. Poisson is a larger project that overlaps with the JFNK work. Wrote this a reminder to implement later.
