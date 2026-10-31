@@ -4,8 +4,8 @@ Only algebraic pieces live here (no transport, no solver coupling): they take ar
 any shape and are written with the backend `xp`, so they are jit/AD friendly.
 
 * SA-noft2 constants, `S_tilde` with the Allmaras et al. (2012) limiter (negative-S̃ safe).
-* ν̃ < 0 is treated as the SA-neg model: nu_t = 0 there (see `mu_t`); the negative-ν̃
-  transport terms come with the solver coupling.
+* ν̃ < 0 is treated with SA-neg (Allmaras et al. 2012): nu_t = 0, f_n-modified diffusion and
+  the negative-ν̃ production/destruction of `source` / `diffusivity`.
 * DDES (Spalart et al. 2006): d_tilde = d - f_d max(0, d - C_DES Delta), with
   f_d = 1 - tanh((8 r_d)^3): f_d -> 0 (RANS, d_tilde = d) inside attached boundary layers,
   f_d -> 1 (LES) away from walls.  Delta is `Geom.delta_max` (Delta_max).
@@ -27,6 +27,8 @@ class SpalartAllmaras:
     cv3: float = 0.9
     cw2: float = 0.3
     cw3: float = 2.0
+    ct3: float = 1.2             # SA-neg
+    cn1: float = 16.0            # SA-neg
     c_des: float = 0.65
     nut_inf_chi: float = 3.0     # free-stream nu_tilde / nu
 
@@ -58,8 +60,9 @@ class SpalartAllmaras:
         """Modified vorticity, bounded below as in Allmaras, Johnson & Spalart (2012)."""
         s_bar = nu_tilde / (self.kappa * d) ** 2 * self.fv2(self.chi(nu_tilde, nu))
         lo = omega + s_bar
-        alt = omega + omega * (self.cv2 ** 2 * omega + self.cv3 * s_bar) \
-            / ((self.cv3 - 2.0 * self.cv2) * omega - s_bar)
+        den = (self.cv3 - 2.0 * self.cv2) * omega - s_bar
+        den = xp.where(den == 0.0, 1.0, den)                      # only used on the unselected branch
+        alt = omega + omega * (self.cv2 ** 2 * omega + self.cv3 * s_bar) / den
         return xp.where(s_bar >= -self.cv2 * omega, lo, alt)
 
     def fw(self, s_tilde, nu_tilde, d_len):
@@ -76,3 +79,24 @@ class SpalartAllmaras:
         r_d = (nu_t + nu) / (xp.sqrt(xp.maximum(grad_u_sq, 1e-20)) * (self.kappa * d) ** 2)
         f_d = 1.0 - xp.tanh((8.0 * r_d) ** 3)
         return d - f_d * xp.maximum(0.0, d - self.c_des * delta)
+
+    def diffusivity(self, rho, nu_tilde, mu):
+        """Coefficient of grad(nu_tilde) in the diffusion term: (mu + rho nu_tilde f_n) / sigma,
+        with f_n = 1 for nu_tilde >= 0 (SA-neg otherwise)."""
+        chi = nu_tilde * rho / mu
+        chi3 = xp.minimum(chi, 0.0) ** 3
+        fn = xp.where(nu_tilde >= 0.0, 1.0, (self.cn1 + chi3) / (self.cn1 - chi3))
+        return (mu + rho * nu_tilde * fn) / self.sigma
+
+    def source(self, rho, nu_tilde, nu, omega, d_len, grad_nt_sq):
+        """Volumetric source of rho*nu_tilde: rho (P - D) + cb2/sigma rho |grad nu_tilde|^2.
+        `d_len` is the wall distance (RANS) or the DDES length scale d_tilde."""
+        pos = nu_tilde >= 0.0
+        nt_p, nt_n = xp.maximum(nu_tilde, 0.0), xp.minimum(nu_tilde, 0.0)
+        s_t = self.s_tilde(omega, nt_p, nu, d_len)
+        pd_pos = self.cb1 * s_t * nt_p - self.cw1 * self.fw(s_t, nt_p, d_len) * (nt_p / d_len) ** 2
+        pd_neg = self.cb1 * (1.0 - self.ct3) * omega * nt_n + self.cw1 * (nt_n / d_len) ** 2
+        return rho * (xp.where(pos, pd_pos, pd_neg) + self.cb2 / self.sigma * grad_nt_sq)
+
+    def init_nu_tilde(self, nu_inf):
+        return self.nut_inf_chi * nu_inf

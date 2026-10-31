@@ -11,8 +11,25 @@ from .backend import xp, set_at
 from .mesh import sl
 
 
-def _fill_mirror(q, blk, geom, axis, side, fn):
-    """ghost layer m <- fn(cons slab of interior layer m, unit +axis normal n, m)."""
+def _nu_tilde_inf(prim, gas, chi):
+    rho, p = float(prim[0]), float(prim[4])
+    return chi * float(gas.mu(p / (rho * gas.R))) / rho
+
+
+def _copy_scalars(src, new, nrm=None):
+    """Transported scalars (rows 5.. of q, = rho * s): copy s from the interior cell."""
+    return new[:1] * src[5:] / src[:1]
+
+
+def _flip_scalars(src, new, nrm=None):
+    """... mirror s with a sign change, so that s = 0 on the face (no-slip wall)."""
+    return -_copy_scalars(src, new)
+
+
+def _fill_mirror(q, blk, geom, axis, side, fn, sfn=_copy_scalars):
+    """ghost layer m <- fn(cons slab of interior layer m, unit +axis normal n, m).
+    `fn` returns the 5 flow variables; if q carries transported scalars (rows 5..),
+    `sfn(src, new, nrm)` returns their ghost values (default: copy of the interior scalar)."""
     ng, n = blk.ng, blk.n[axis]
     fb = ng if side == 0 else ng + n                      # boundary face index
     S = geom.S[axis][sl(4, axis, slice(fb, fb + 1))]      # (3, ..1..) full tangential extent
@@ -21,7 +38,10 @@ def _fill_mirror(q, blk, geom, axis, side, fn):
         gi = ng - 1 - m if side == 0 else ng + n + m
         ii = ng + m if side == 0 else ng + n - 1 - m
         src = q[sl(q.ndim, axis, slice(ii, ii + 1))]
-        q = set_at(q, sl(q.ndim, axis, slice(gi, gi + 1)), fn(src, nrm, m))
+        new = fn(src, nrm, m)
+        if q.shape[0] > new.shape[0]:
+            new = xp.concatenate([new, sfn(src, new, nrm)], axis=0)
+        q = set_at(q, sl(q.ndim, axis, slice(gi, gi + 1)), new)
     return q
 
 
@@ -63,11 +83,13 @@ class NoSlipWall(BC):
             Tg = T if Tw is None else xp.maximum(2.0 * Tw - T, 0.1 * Tw)
             rho = w[4] / (gas.R * Tg)
             return gas.prim_to_cons(xp.concatenate([rho[None], -w[1:4], w[4:5]], axis=0))
-        return _fill_mirror(q, blk, geom, axis, side, fn)
+        return _fill_mirror(q, blk, geom, axis, side, fn, _flip_scalars)
 
 
 class Dirichlet(BC):
-    """Fixed primitive state [rho,u,v,w,p] (supersonic inflow / far field)."""
+    """Fixed primitive state [rho,u,v,w,p] (supersonic inflow / far field).
+    Transported turbulence variables take the free-stream value nu_tilde = chi_inf * nu_inf."""
+    chi_inf = 3.0
 
     def __init__(self, prim):
         self.prim = np.asarray(prim, float)
@@ -76,16 +98,32 @@ class Dirichlet(BC):
         def fn(src, nrm, m):
             w = xp.asarray(self.prim).reshape((5,) + (1,) * (src.ndim - 1)) * xp.ones_like(src[:1])
             return gas.prim_to_cons(w)
-        return _fill_mirror(q, blk, geom, axis, side, fn)
+
+        def sfn(src, new, nrm):
+            return new[:1] * _nu_tilde_inf(self.prim, gas, self.chi_inf)
+
+        return _fill_mirror(q, blk, geom, axis, side, fn, sfn)
 
 
 class CharacteristicFarfield(BC):
-    """Linearized characteristic far-field condition for primitive [rho,u,v,w,p]."""
+    """Linearized characteristic far-field condition for primitive [rho,u,v,w,p].
+    Transported turbulence variables are imposed from infinity on inflow faces
+    (nu_tilde = chi_inf * nu_inf) and extrapolated on outflow faces."""
+    chi_inf = 3.0
 
     def __init__(self, prim):
         self.prim = np.asarray(prim, float)
 
     def fill(self, q, blk, geom, gas, axis, side):
+        n_sign = 1.0 if side == 1 else -1.0
+
+        def sfn(src, new, nrm):
+            w, _ = gas.cons_to_prim(src)
+            outgoing = n_sign * sum(w[1 + i] * nrm[i] for i in range(3)) > 0.0
+            nt_int = src[5:] / src[:1]
+            nt_inf = _nu_tilde_inf(self.prim, gas, self.chi_inf)
+            return new[:1] * xp.where(outgoing[None], nt_int, nt_inf)
+
         def fn(src, nrm, m):
             w, T = gas.cons_to_prim(src)
             w_inf = xp.asarray(self.prim).reshape((5,) + (1,) * (src.ndim - 1)) * xp.ones_like(src[:1])
@@ -114,7 +152,7 @@ class CharacteristicFarfield(BC):
             u_bc = u_inf + dun_bc * n_out + du_t
             p_bc = p_inf + dp_bc
             return gas.prim_to_cons(xp.concatenate([rho_bc[None], u_bc, p_bc[None]], axis=0))
-        return _fill_mirror(q, blk, geom, axis, side, fn)
+        return _fill_mirror(q, blk, geom, axis, side, fn, sfn)
 
 
 class Extrapolate(BC):

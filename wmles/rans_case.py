@@ -1,0 +1,111 @@
+"""RANS / DDES validation cases on TMBWG Plot3D + NMF grids (2DZP flat plate, 2DANW airfoil wake).
+
+    mesh, solver, props = build_rans_case("tests/data/2DZP/flatplate_clust2_3levelsdown_69x49",
+                                           mach=0.2, reynolds=5e6)
+    Q, history = run_steady(solver, initial_state(solver, props), iterations=20000)
+
+The grid unit length is mapped to `props["length"]` metres so that Re (per grid unit) is exact.
+The 2-D grids are respanned to `ncells` periodic spanwise cells (the solver is 3-D).
+"""
+import numpy as np
+
+from .airfoil_case import flow_properties
+from .backend import xp
+from .bc import CharacteristicFarfield
+from .nmf import build_mesh, read_nmf, respan
+from .plot3d import read_plot3d
+from .schemes import MUSCLHLLC
+from .solver import Solver
+from .turbulence import SpalartAllmaras
+
+FARFIELD_TYPES = ("farfield_riem", "subsonic_inflow_pt", "back_pressure")
+
+
+def build_rans_case(base, *, mach, reynolds, alpha_deg=0.0, T_inf=300.0, p_inf=101_325.0,
+                    ncells=4, span=0.04, periodic_type="symmetry_y_strong", scheme=None,
+                    turbulence="sa", cfl=0.8, bc_map=None):
+    """`base`: path without extension of the .p3dfmt/.nmf pair.  `reynolds`: per grid unit.
+    `turbulence`: 'sa', None (laminar) or a configured turbulence model."""
+    grid, nmf = read_plot3d(base + ".p3dfmt"), read_nmf(base + ".nmf")
+    props = flow_properties(mach=mach, reynolds=reynolds, alpha_deg=alpha_deg, T_inf=T_inf, p_inf=p_inf)
+    props["length"] = props.pop("chord")
+    nodes, nmf = respan(grid.nodes, nmf, ncells=ncells, length=span)
+    nodes = [X * props["length"] for X in nodes]
+    prim = props["prim_inf"]
+    bcs = {t: CharacteristicFarfield(prim) for t in FARFIELD_TYPES}
+    bcs.update(bc_map or {})
+    mesh = build_mesh(nodes, nmf, bc_map=bcs, periodic=((periodic_type, 0),))
+    if turbulence == "sa":
+        turbulence = SpalartAllmaras()
+    solver = Solver(mesh, props["gas"], scheme or MUSCLHLLC(), cfl=cfl, turbulence=turbulence)
+    props["base"] = base
+    return mesh, solver, props
+
+
+def initial_state(solver, props, profile=None):
+    """Free-stream state, or `profile="flatplate"`: an analytic turbulent boundary layer along a plate
+    starting at x = 0 with the wall at z = 0 (a convergence aid only: the steady solution does not
+    depend on the initial state, but the uniform start needs ~1e5 explicit pseudo-time steps)."""
+    prim = props["prim_inf"]
+    if profile is None:
+        return solver.init_state(lambda xc: xp.stack([prim[i] + 0.0 * xc[0] for i in range(5)]))
+    if profile != "flatplate":
+        raise ValueError("profile must be None or 'flatplate'")
+    return solver.init_state(*_flatplate_profile(props, solver.gas))
+
+
+def _flatplate_profile(props, gas, kappa=0.41):
+    """(prim_fn, nu_tilde_fn): 1/7th-power-law skin friction and thickness (Schlichting) with a
+    Reichardt inner law plus a Coles wake, and nu_tilde = kappa u_tau y damped near the wall."""
+    U, nu, prim, L = props["U_inf"], props["nu_inf"], props["prim_inf"], props["length"]
+
+    def state(xc):
+        x, z = xc[0], xc[2]
+        xs = xp.maximum(x, 0.02 * L)
+        re_x = U * xs / nu
+        u_tau = U * xp.sqrt(0.5 * 0.0592 * re_x ** -0.2)
+        delta = 0.37 * xs * re_x ** -0.2
+        yp = u_tau * z / nu
+        up = (xp.log(1.0 + kappa * yp) / kappa
+              + 7.8 * (1.0 - xp.exp(-yp / 11.0) - yp / 11.0 * xp.exp(-yp / 3.0)))
+        wake = 2.0 * 0.5 / kappa * xp.sin(0.5 * np.pi * xp.minimum(z / delta, 1.0)) ** 2
+        u = xp.where((x > 0.0) & (z < delta), xp.minimum((up + wake) * u_tau, U), U)
+        nut = kappa * u_tau * z * (1.0 - xp.exp(-yp / 17.0)) * xp.exp(-(z / (0.4 * delta)) ** 2)
+        nut = xp.where((x > 0.0) & (z < delta), nut, 0.0)
+        return u, nut
+
+    def prim_fn(xc):
+        u, _ = state(xc)
+        zero = 0.0 * xc[0]
+        return xp.stack([prim[0] + zero, u, zero, zero, prim[4] + zero])
+
+    def nu_tilde_fn(xc):
+        _, nut = state(xc)
+        return xp.maximum(nut, 3.0 * nu)
+
+    return prim_fn, nu_tilde_fn
+
+
+def residual_norms(solver, Q):
+    """Global RMS (over all interior cells) of the rhs of rho and, with SA, of rho*nu_tilde."""
+    R = solver.rhs(Q)
+    rows = (0,) if solver.turbulence is None else (0, 5)
+    n = sum(int(np.prod(b.n)) for b in solver.blocks)
+    return tuple(float(np.sqrt(sum(np.sum(np.asarray(b.interior(r[row])) ** 2)
+                                   for b, r in zip(solver.blocks, R)) / n)) for row in rows)
+
+
+def run_steady(solver, Q, iterations, *, report_every=500, tol=None, callback=None):
+    """Local-time-stepping SSP-RK3 toward a steady state.  Returns (Q, history); history rows are
+    (iteration, rms rho residual[, rms rho*nu_tilde residual]).  Stops early once the density
+    residual has dropped by `tol` relative to the first report."""
+    history = []
+    for it in range(1, iterations + 1):
+        if it % report_every == 0 or it == 1:
+            history.append((it,) + residual_norms(solver, Q))
+            if callback:
+                callback(it, Q, history[-1])
+            if tol is not None and history[-1][1] < tol * history[0][1]:
+                break
+        Q = solver.step_local(Q)
+    return Q, history

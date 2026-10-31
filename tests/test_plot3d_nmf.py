@@ -248,7 +248,7 @@ def test_cascade_split():
 
 
 def test_airfoil_wake_grid():
-    up = os.path.join(DATA, "nak_a_ff_500c_2zn_L5")
+    up = os.path.join(DATA, "2DANW/nak_a_ff_500c_2zn_L5")
     grid = read_plot3d(up + ".p3dfmt")
     nmf = read_nmf(up + ".nmf")
     assert [X.shape[1:] for X in grid.nodes] == [(2, 43, 57), (2, 65, 29)] and grid.iblank is None

@@ -8,6 +8,9 @@ wmles/
   bc.py          SlipWall, NoSlipWall, Dirichlet, CharacteristicFarfield, Extrapolate, WallModel
   wall_model.py  EquilibriumWallModel: Spalding (u_tau, Newton) + Kader (heat flux) / adiabatic recovery
   sgs.py         Smagorinsky, WALE, Vreman (or None = implicit LES)
+  turbulence.py  Spalart-Allmaras (SA-noft2, SA-neg, optional DDES length scale): point-wise closure functions
+  wall_distance.py  wall distance of every cell (exact point-to-triangle, periodic images) -> Geom.dist
+  rans_case.py / rans_post.py  TMR 2DZP / 2DANW RANS setups, local-time-step driver, C_f / Re_theta / forces
   schemes.py     KEP (order 2/4 split-form central), MUSCL-HLLC, Hybrid (Ducros switch)
   viscous.py     Green-Gauss gradients, compact-corrected face gradients, viscous fluxes
   solver.py      apply_bcs -> RHS -> SSP-RK3, CFL dt, constant-mass-flux constraint, wall stats/loads
@@ -21,7 +24,7 @@ examples/channel_wmles.py   Ma_b=0.3 channel, 2 blocks in x, wall-modelled walls
 examples/channel_ReTau5200.py  UMD Re_tau~5200 channel validation case driver (see below)
 examples/smooth_ramp.py        UMD smooth-ramp case driver (see below)
 examples/airfoil_p3d.py     load Plot3D + NMF airfoil grid, build mesh, optional short run / VTU output
-tests/data/                 NASA TMBWG airfoil near-wake grid L5 (nak_a_ff_500c_2zn_L5 .p3dfmt/.nmf)
+tests/data/2DANW, 2DZP      NASA TMBWG grids: airfoil near-wake L5 (nak_a_ff_500c_2zn_L5) and flat plate (69x49), .p3dfmt/.nmf
 tests/                      multiblock/orientation, free-stream, wall model, Sod tube
 ```
 
@@ -284,6 +287,34 @@ print(describe(mesh))
 * `CharacteristicFarfield` retains outgoing linearized Euler characteristics and imposes incoming
   characteristics from the supplied free stream. The TMBWG grids are RANS-type (y+ ~ 1) so explicit
   dt is tiny - use a wall-modelled-LES grid for real runs.
+
+## Spalart-Allmaras RANS (wall-resolved) on TMR grids
+`Solver(..., turbulence=SpalartAllmaras())` appends rho*nu_tilde as the 6th row of every block
+state (`Q[b]` is `(6, Ni, Nj, Nk)`); without `turbulence` the state keeps its 5 rows and nothing
+changes. SA replaces the LES closure `sgs`. nu_tilde is convected with the limited
+second-order upwind value on the mass flux of the chosen scheme, diffused with the compact
+face gradient, and has the SA-neg terms for nu_tilde < 0. `NoSlipWall` mirrors nu_tilde with
+opposite sign (nu_tilde = 0 on the face); `Dirichlet`/`CharacteristicFarfield` impose
+`chi_inf * nu_inf` (default chi_inf = 3) on inflow. The wall distance is computed once on the
+host (`wall_distance.attach_wall_distance`, called by `Solver` if needed). `WallModel` walls
+are supported only with zero nu_tilde flux (wall-function DDES comes later).
+
+Steady RANS uses per-cell time steps: `solver.step_local(Q)` (or `rans_case.run_steady`).
+Explicit pseudo-time is stiff in the outer boundary layer, so from a uniform start the
+boundary layer needs ~1e5 steps; `initial_state(..., profile="flatplate")` starts from an
+analytic turbulent boundary layer instead (the implicit JFNK solver is the real fix).
+
+```bash
+python -m examples.flatplate_sa --iterations 20000 --scheme muscl --out out/flatplate_sa   # TMR 2DZP: C_f vs K-S
+python -m examples.airfoil_wake_sa --iterations 20000 --out out/airfoil_wake_sa            # TMR 2DANW: wake profiles, C_d
+python -m unittest tests.test_sa tests.test_rans_cases tests.test_wall_distance tests.test_turbulence
+```
+Grids live in `tests/data/2DZP` and `tests/data/2DANW` (TMBWG; the 2-D grids are respanned to 4
+periodic spanwise cells; they extrude along y, so the flow plane is (x, z)). Reference data:
+Karman-Schoenherr C_f(Re_theta) for 2DZP; Nakayama experiment and the TMR SA-noft2 results for 2DANW.
+Status: the flat plate matches K-S to ~1-2% for x <= 1.5 (not fully converged; the last ~25% of the
+plate is affected by the outflow); the airfoil wake case runs but is not validated yet. MUSCL-HLLC
+converges; the Hybrid scheme (central KEP4) does not converge for steady RANS on these grids.
 
 ## Design
 * State: tuple of `(5, Ni, Nj, Nk)` arrays (one per block, ghosts included), `q = [rho, rho*u_vec, rho*E]`

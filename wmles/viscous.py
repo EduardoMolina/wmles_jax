@@ -49,3 +49,20 @@ def viscous_flux(blk, geom, d, phi, g, mu_eff, k_eff):
     dTdn = xp.einsum('j...,j...->...', gf[3], S)
     return xp.concatenate([xp.zeros_like(div)[None], -tauS,
                            (-xp.sum(uf * tauS, axis=0) - kf * dTdn)[None]], axis=0)
+
+
+def scalar_diffusion_flux(blk, geom, d, s, gs, coef):
+    """Diffusive flux  -coef grad(s).S  of a cell-centred scalar `s` (grad `gs` (3,..), diffusivity
+    `coef`) through the n_d+1 interior faces of direction d; same compact face gradient as
+    `viscous_flux`.  Returns the flux with the sign convention of the other flux rows."""
+    Lf = lambda a: blk.slab(a, d, -1, 0)
+    Rf = lambda a: blk.slab(a, d, 0, 1)
+    gbar = 0.5 * (Lf(gs) + Rf(gs))
+    dx = Rf(geom.xc) - Lf(geom.xc)
+    dist = xp.sqrt(xp.sum(dx * dx, axis=0))
+    e = dx / dist
+    corr = (Rf(s) - Lf(s)) / dist - xp.sum(gbar * e, axis=0)
+    gf = gbar + corr[None] * e
+    cf = 0.5 * (Lf(coef) + Rf(coef))
+    S = blk.slab(geom.S[d], d, 0, 1)
+    return -cf * xp.sum(gf * S, axis=0)

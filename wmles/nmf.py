@@ -53,6 +53,7 @@ FACE_NAME = {(0, 0): "imin", (0, 1): "imax", (1, 0): "jmin", (1, 1): "jmax",
 # deliberately absent: supply them through `bc_map`.
 DEFAULT_BC_MAP = {
     "symmetry_x": SlipWall, "symmetry_y": SlipWall, "symmetry_z": SlipWall,
+    "symmetry_x_strong": SlipWall, "symmetry_y_strong": SlipWall, "symmetry_z_strong": SlipWall,
     "wall": NoSlipWall, "viscous_solid": NoSlipWall,
     "inviscid_solid": SlipWall,
 }
@@ -89,7 +90,7 @@ def read_nmf(path):
         dims[b - 1] = (i, j, k)
     patches = []
     for r in rows[1 + nb:]:
-        typ = r[0].lower().replace("-", "_")
+        typ = r[0].strip("'\"").lower().replace("-", "_")
         if typ in _UNSUPPORTED:
             raise NotImplementedError(f"NMF entry type '{r[0]}' is not supported "
                                       f"(only one-to-one interfaces and boundary conditions)")
