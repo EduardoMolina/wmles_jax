@@ -90,10 +90,15 @@ I read the solver, SGS, viscous, BC, wall-model, scheme, mesh, backend and shard
 
 ## Part B — Implicit JFNK operator
 
-### B0. Formulation
+### B0a. Formulation for Steady-State
 - Solve `R(Q) = (Q − Qⁿ)/Δt − rhs(Q) = 0`, matching the per-volume residual the solver already computes.
-- Time integration: backward Euler and BDF2, with a pseudo-time (CFL-ramped) continuation for steady RANS and dual-time stepping for unsteady DDES.
+- Time integration: backward Euler and BDF2, with a pseudo-time (CFL-ramped) continuation for steady RANS.
 - Where the speedup comes from: wall-normal stiffness in wall-resolved cells. Implicit time steps are limited only by the convective CFL in the LES region, which could be about 100× larger than today's dt of 1e-7 s. In isotropic LES regions the benefit is smaller.
+- First implementation: `wmles/implicit.py` provides backward-Euler and fixed-step BDF2 residuals, finite-difference Newton-GMRES, and a geometric CFL-ramped backward-Euler pseudo-time driver. `examples/flatplate_sa_implicit.py` targets the wall-resolved 2DZP SA case.
+- This is an unpreconditioned prototype; verify with small steps first. BDF2 requires a prior state, and the steady ramp currently uses backward Euler.
+
+### B0b. Formulation for Unsteady
+- Dual-Time Stepping for DDES.
 
 ### B1. Matrix-free operator (`wmles/implicit.py`)
 - Start with **finite-difference J·v** `(R(Q+εv) − R(Q))/ε`, since float64 is on.

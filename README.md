@@ -14,6 +14,7 @@ wmles/
   schemes.py     KEP (order 2/4 split-form central), MUSCL-HLLC, Hybrid (Ducros switch)
   viscous.py     Green-Gauss gradients, compact-corrected face gradients, viscous fluxes
   solver.py      apply_bcs -> RHS -> SSP-RK3, CFL dt, constant-mass-flux constraint, wall stats/loads
+  implicit.py    matrix-free backward-Euler / BDF2 Newton-GMRES and steady pseudo-time ramp
   io_vtk.py      VTU/PVD export and restart loading via pyvista (optional dependency)
   io_wall_loads.py CSV export of integrated wall forces and moments
   channel5200.py UMD wall-model validation case setup: grid table, flow properties, IC, plane/time stats
@@ -113,6 +114,25 @@ flow conditions and is not itself a reproduction of the database solution.
 The solver compiles the residual and SSP-RK update stages separately, rather
 than asking XLA to compile the entire multiblock RK step as one graph. The
 first step still compiles these kernels for the selected device and grid shapes.
+
+## Implicit steady SA prototype
+
+`wmles/implicit.py` provides a backward-Euler residual, fixed-step BDF2 residual,
+finite-difference Jacobian-vector products, restarted GMRES, and a geometric
+pseudo-time CFL ramp that derives each `dt` from the solver's current explicit
+stability limit. The current Newton-GMRES implementation is an unpreconditioned
+prototype; it is intended to establish and validate the steady RANS formulation,
+not yet to replace the explicit driver for production-scale runs. The target case
+is the wall-resolved 2DZP flat plate:
+
+```bash
+python -m examples.flatplate_sa_implicit --steps 10
+python -m examples.flatplate_sa_implicit --steps 20 --cfl 0.1 --max-cfl 10
+```
+
+Use a small initial CFL and a gradual ramp;
+the example defaults to the analytic flat-plate initial condition used by the
+explicit SA validation.
 
 ## Re_tau = 5200 channel validation case
 `wmles/channel5200.py` sets up the UMD wall-model validation case

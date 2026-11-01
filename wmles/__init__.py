@@ -6,5 +6,6 @@ from .wall_model import EquilibriumWallModel
 from .wall_distance import attach_wall_distance
 from .schemes import KEP, MUSCLHLLC, Hybrid
 from .solver import Solver, ConstantMassFlux
+from .implicit import ImplicitIntegrator
 from .plot3d import read_plot3d, write_plot3d
 from .nmf import read_nmf, respan, extrude_2d, build_mesh, describe
