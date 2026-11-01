@@ -155,6 +155,22 @@ class CharacteristicFarfield(BC):
         return _fill_mirror(q, blk, geom, axis, side, fn, sfn)
 
 
+class BackPressure(BC):
+    """Subsonic outflow: static pressure imposed (ghost p = 2 p_back - p_interior, i.e. p_back on the
+    face); density and velocity (and transported scalars) extrapolated, so boundary-layer and wake
+    deficits leave the domain without being reset to free-stream values."""
+
+    def __init__(self, p_back):
+        self.p_back = float(p_back)
+
+    def fill(self, q, blk, geom, gas, axis, side):
+        def fn(src, nrm, m):
+            w, _ = gas.cons_to_prim(src)
+            p = xp.maximum(2.0 * self.p_back - w[4:5], 0.1 * self.p_back)
+            return gas.prim_to_cons(xp.concatenate([w[:4], p], axis=0))
+        return _fill_mirror(q, blk, geom, axis, side, fn)
+
+
 class Extrapolate(BC):
     """Zero-gradient (supersonic outflow)."""
 

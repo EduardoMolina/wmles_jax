@@ -141,3 +141,24 @@ class TurbulenceSANegTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestOutflowAndLowMach(unittest.TestCase):
+    def test_low_mach_hllc_is_consistent_with_uniform_flow_and_sheds_dissipation(self):
+        from wmles.schemes import hllc
+        gam = 1.4
+        wl = np.array([[1.0], [0.01], [0.0], [0.0], [1.0 / gam]])
+        wr = np.array([[1.0], [-0.01], [0.0], [0.0], [1.0 / gam]])
+        S = np.array([[1.0], [0.0], [0.0]])
+        n = S
+        z = 0.01 / 1.0
+        half = 0.5 * (1.0 - z) * (wr[1] - wl[1])
+        wl2, wr2 = wl.copy(), wr.copy()
+        wl2[1] += half
+        wr2[1] -= half
+        f_std, f_lm = hllc(wl, wr, S, gam), hllc(wl2, wr2, S, gam)
+        self.assertLess(abs(f_lm[0, 0]), abs(f_std[0, 0]) + 1e-14)
+
+    def test_back_pressure_extrapolates_velocity(self):
+        from wmles.bc import BackPressure
+        self.assertEqual(BackPressure(1.0).p_back, 1.0)

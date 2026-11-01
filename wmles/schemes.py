@@ -138,8 +138,12 @@ def hllc(wl, wr, S, gamma):
 
 
 class MUSCLHLLC:
-    def __init__(self, limiter="albada"):
+    def __init__(self, limiter="albada", low_mach=False, m_floor=1e-3):
+        """low_mach: Thornber et al. (2008) correction -- the jump of the face-normal velocity between
+        the reconstructed states is scaled by z = min(1, max(M_L, M_R)) before the Riemann solver,
+        removing the O(1/M) excess dissipation of HLLC at low Mach number."""
         self.lim = {"albada": _albada, "minmod": _minmod}[limiter]
+        self.low_mach, self.m_floor = low_mach, m_floor
 
     def __call__(self, blk, geom, w, gas, d, theta=None):
         S = blk.slab(geom.S[d], d, 0, 1)
@@ -149,6 +153,15 @@ class MUSCLHLLC:
         wr = R - 0.5 * self.lim(R - L, R2 - R)
         bad = (wl[0] <= 0) | (wl[4] <= 0) | (wr[0] <= 0) | (wr[4] <= 0)   # positivity fallback
         wl, wr = xp.where(bad, L, wl), xp.where(bad, R, wr)
+        if self.low_mach:
+            n = S / xp.sqrt(xp.sum(S * S, axis=0))
+            unl, unr = xp.sum(wl[1:4] * n, axis=0), xp.sum(wr[1:4] * n, axis=0)
+            ml = xp.sqrt(xp.sum(wl[1:4] ** 2, axis=0) * wl[0] / (gas.gamma * wl[4]))
+            mr = xp.sqrt(xp.sum(wr[1:4] ** 2, axis=0) * wr[0] / (gas.gamma * wr[4]))
+            z = xp.clip(xp.maximum(ml, mr), self.m_floor, 1.0)
+            half = 0.5 * (1.0 - z) * (unr - unl)
+            wl = xp.concatenate([wl[:1], wl[1:4] + half * n, wl[4:5], wl[5:]], axis=0)
+            wr = xp.concatenate([wr[:1], wr[1:4] - half * n, wr[4:5], wr[5:]], axis=0)
         return hllc(wl, wr, S, gas.gamma)
 
 

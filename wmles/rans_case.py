@@ -11,7 +11,7 @@ import numpy as np
 
 from .airfoil_case import flow_properties
 from .backend import xp
-from .bc import CharacteristicFarfield
+from .bc import BackPressure, CharacteristicFarfield
 from .nmf import build_mesh, read_nmf, respan
 from .plot3d import read_plot3d
 from .schemes import MUSCLHLLC
@@ -33,6 +33,7 @@ def build_rans_case(base, *, mach, reynolds, alpha_deg=0.0, T_inf=300.0, p_inf=1
     nodes = [X * props["length"] for X in nodes]
     prim = props["prim_inf"]
     bcs = {t: CharacteristicFarfield(prim) for t in FARFIELD_TYPES}
+    bcs["back_pressure"] = BackPressure(prim[4])
     bcs.update(bc_map or {})
     mesh = build_mesh(nodes, nmf, bc_map=bcs, periodic=((periodic_type, 0),))
     if turbulence == "sa":

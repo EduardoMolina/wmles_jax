@@ -36,7 +36,7 @@ def main(argv=None):
     ap.add_argument("--reynolds", type=float, default=5.0e6, help="per grid unit")
     ap.add_argument("--iterations", type=int, default=20000)
     ap.add_argument("--cfl", type=float, default=0.8)
-    ap.add_argument("--scheme", choices=("muscl", "hybrid"), default="muscl")
+    ap.add_argument("--scheme", choices=("muscl", "muscl-lm", "hybrid"), default="muscl")
     ap.add_argument("--report", type=int, default=1000)
     ap.add_argument("--out", default="out/flatplate_sa")
     ap.add_argument("--load", default=None, help="restart from a state.npz")
@@ -47,7 +47,7 @@ def main(argv=None):
                     help="initial state: uniform free stream or an analytic turbulent boundary layer")
     args = ap.parse_args(argv)
 
-    scheme = {"muscl": MUSCLHLLC, "hybrid": Hybrid}[args.scheme]()
+    scheme = {"muscl": MUSCLHLLC, "muscl-lm": lambda: MUSCLHLLC(low_mach=True), "hybrid": Hybrid}[args.scheme]()
     mesh, solver, props = build_rans_case(args.grid, mach=args.mach, reynolds=args.reynolds,
                                           scheme=scheme, cfl=args.cfl)
     os.makedirs(args.out, exist_ok=True)
