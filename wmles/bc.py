@@ -155,6 +155,44 @@ class CharacteristicFarfield(BC):
         return _fill_mirror(q, blk, geom, axis, side, fn, sfn)
 
 
+class TotalConditionsInflow(BC):
+    """Subsonic inflow from total pressure / temperature along +x: the static pressure is taken from the
+    interior (zero gradient), T = Tt / (1 + (g-1)/2 M^2) with M from (Pt/p)^((g-1)/g), and the flow is
+    normal to the boundary-aligned x direction.  `streams` = ((z_max, Pt, Tt), ...): the stream is
+    selected per block from the mean height of its cells (blocks must not straddle a stream split);
+    the last entry applies above all others.  nu_tilde = chi_inf * nu of the ghost state."""
+    chi_inf = 3.0
+
+    def __init__(self, streams):
+        self.streams = tuple(streams)
+
+    def _stream(self, blk):
+        zm = float(np.mean(np.asarray(blk.x_int)[2]))
+        for z_max, pt, tt in self.streams:
+            if zm < z_max:
+                return pt, tt
+        return self.streams[-1][1:]
+
+    def fill(self, q, blk, geom, gas, axis, side):
+        pt, tt = self._stream(blk)
+        g = gas.gamma
+
+        def fn(src, nrm, m):
+            w, _ = gas.cons_to_prim(src)
+            p = w[4]
+            t0 = (pt / p) ** ((g - 1.0) / g)                       # 1 + (g-1)/2 M^2
+            T = tt / t0
+            u = xp.sqrt(xp.maximum(2.0 * g / (g - 1.0) * gas.R * (tt - T), 0.0))
+            zero = 0.0 * p
+            return gas.prim_to_cons(xp.stack([p / (gas.R * T), u, zero, zero, p]))
+
+        def sfn(src, new, nrm):
+            w, T = gas.cons_to_prim(new)
+            return new[:1] * (self.chi_inf * gas.mu(T) / w[0])
+
+        return _fill_mirror(q, blk, geom, axis, side, fn, sfn)
+
+
 class BackPressure(BC):
     """Subsonic outflow: static pressure imposed (ghost p = 2 p_back - p_interior, i.e. p_back on the
     face); density and velocity (and transported scalars) extrapolated, so boundary-layer and wake

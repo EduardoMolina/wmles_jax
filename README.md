@@ -10,7 +10,7 @@ wmles/
   sgs.py         Smagorinsky, WALE, Vreman (or None = implicit LES)
   turbulence.py  Spalart-Allmaras (SA-noft2, SA-neg, optional DDES length scale): point-wise closure functions
   wall_distance.py  wall distance of every cell (exact point-to-triangle, periodic images) -> Geom.dist
-  rans_case.py / rans_post.py  TMR 2DZP / 2DANW RANS setups, local-time-step driver, C_f / Re_theta / forces
+  rans_case.py / rans_post.py  TMR 2DZP / 2DANW / 2DCJ RANS setups, local-time-step driver, C_f / Re_theta / forces
   schemes.py     KEP (order 2/4 split-form central), MUSCL-HLLC, Hybrid (Ducros switch)
   viscous.py     Green-Gauss gradients, compact-corrected face gradients, viscous fluxes
   solver.py      apply_bcs -> RHS -> SSP-RK3, CFL dt, constant-mass-flux constraint, wall stats/loads
@@ -307,6 +307,7 @@ analytic turbulent boundary layer instead (the implicit JFNK solver is the real 
 ```bash
 python -m examples.flatplate_sa --iterations 20000 --scheme muscl --out out/flatplate_sa   # TMR 2DZP: C_f vs K-S
 python -m examples.airfoil_wake_sa --iterations 20000 --out out/airfoil_wake_sa            # TMR 2DANW: wake profiles, C_d
+python -m examples.coflowing_jet_sa --iterations 50000 --out out/coflowing_jet_sa          # TMR 2DCJ: centreline u vs CFL3D/FUN3D, plate C_d
 python -m unittest tests.test_sa tests.test_rans_cases tests.test_wall_distance tests.test_turbulence
 ```
 Grids live in `tests/data/2DZP` and `tests/data/2DANW` (TMBWG; the 2-D grids are respanned to 4

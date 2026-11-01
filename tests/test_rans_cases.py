@@ -4,7 +4,7 @@ import unittest
 import numpy as np
 
 from wmles.backend import xp
-from wmles.rans_case import build_rans_case, initial_state, run_steady
+from wmles.rans_case import build_jet_case, build_rans_case, initial_state, jet_initial_state, run_steady
 from wmles import rans_post as rp
 
 PLATE = "tests/data/2DZP/flatplate_clust2_3levelsdown_69x49"
@@ -82,6 +82,20 @@ class AirfoilWakeCase(unittest.TestCase):
         self.assertTrue(all(np.all(np.isfinite(np.asarray(q))) for q in Q))
         forces = rp.wall_forces(solver, Q, props)
         self.assertTrue(np.all(np.isfinite(forces["force"])))
+
+
+class CoflowingJetCase(unittest.TestCase):
+    def test_streams_and_short_run(self):
+        mesh, solver, props = build_jet_case("tests/data/2DCJ/shear_3levelsdown")
+        walls = [b.name for b in mesh.blocks for bc in b.faces.values() if getattr(bc, "is_wall", False)]
+        self.assertEqual(sorted(walls), ["b1", "b2"])                  # the plate, both sides
+        Q = jet_initial_state(solver, props)
+        Q, _ = run_steady(solver, Q, 20, report_every=20)
+        self.assertTrue(all(np.all(np.isfinite(np.asarray(q))) for q in Q))
+        from examples.coflowing_jet_sa import centerline, read_reference
+        x, u = centerline(solver, Q)
+        self.assertAlmostEqual(float(u[0] / props["a_inf"]), 0.5, delta=0.05)
+        self.assertEqual(set(read_reference()), {"CFL3D", "FUN3D"})
 
 
 if __name__ == "__main__":

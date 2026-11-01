@@ -1,4 +1,4 @@
-"""RANS / DDES validation cases on TMBWG Plot3D + NMF grids (2DZP flat plate, 2DANW airfoil wake).
+"""RANS / DDES validation cases on TMBWG Plot3D + NMF grids (2DZP flat plate, 2DANW airfoil wake, 2DCJ coflowing jet).
 
     mesh, solver, props = build_rans_case("tests/data/2DZP/flatplate_clust2_3levelsdown_69x49",
                                            mach=0.2, reynolds=5e6)
@@ -11,7 +11,7 @@ import numpy as np
 
 from .airfoil_case import flow_properties
 from .backend import xp
-from .bc import BackPressure, CharacteristicFarfield
+from .bc import BackPressure, CharacteristicFarfield, TotalConditionsInflow
 from .nmf import build_mesh, read_nmf, respan
 from .plot3d import read_plot3d
 from .schemes import MUSCLHLLC
@@ -110,3 +110,39 @@ def run_steady(solver, Q, iterations, *, report_every=500, tol=None, callback=No
                 break
         Q = solver.step_local(Q)
     return Q, history
+
+
+JET_MACH = (0.5, 0.25)            # inner jet (y < 0.5), outer stream
+JET_SPLIT = 0.5                   # height of the separating plate, grid units
+
+
+def build_jet_case(base, *, reynolds=5.0e4, mach=JET_MACH, **kw):
+    """TMR 2DCJ coflowing jet: uniform static p and T, inner/outer stream Mach numbers `mach`.
+    As in the TMR (CFL3D/FUN3D inputs) the reference Mach number is that of the inner stream and
+    `reynolds` = rho U_ref L / mu per grid unit, so props["U_inf"] = mach[0] a and force coefficients
+    are normalised with q_ref = rho U_ref^2 / 2."""
+    props_bc = flow_properties(mach=mach[0], reynolds=reynolds)
+    gas, T, p = props_bc["gas"], props_bc["T_inf"], props_bc["p_inf"]
+    g = gas.gamma
+    t0 = [1.0 + 0.5 * (g - 1.0) * m * m for m in mach]
+    length = props_bc["chord"]
+    inflow = TotalConditionsInflow(((JET_SPLIT * length, p * t0[0] ** (g / (g - 1.0)), T * t0[0]),
+                                    (np.inf, p * t0[1] ** (g / (g - 1.0)), T * t0[1])))
+    bc_map = {"subsonic_inflow_pt": inflow, "back_pressure": BackPressure(p), **kw.pop("bc_map", {})}
+    mesh, solver, props = build_rans_case(base, mach=mach[0], reynolds=reynolds, bc_map=bc_map, **kw)
+    props["mach_streams"] = tuple(mach)
+    props["a_inf"] = props["U_inf"] / mach[0]
+    return mesh, solver, props
+
+
+def jet_initial_state(solver, props):
+    """Uniform p and T; inner/outer stream velocity M a_inf on either side of the plate height."""
+    prim, a, L = props["prim_inf"], props["a_inf"], props["length"]
+    m_in, m_out = props["mach_streams"]
+
+    def prim_fn(xc):
+        u = xp.where(xc[2] < JET_SPLIT * L, m_in * a, m_out * a)
+        zero = 0.0 * xc[0]
+        return xp.stack([prim[0] + zero, u + zero, zero, zero, prim[4] + zero])
+
+    return solver.init_state(prim_fn)
