@@ -40,10 +40,41 @@ def _add(a, b, scale=1.0):
     return tuple(x + scale * y for x, y in zip(a, b))
 
 
+def _reduce(solver, values, op):
+    """Combine per-block partial results (scalars or equal-shape arrays).
+
+    A sharded solver exposes ``_reduce`` (partials gathered on device 0); the single-device
+    solver stacks them locally. Every global quantity of the Krylov/Newton loop goes through here.
+    """
+    if hasattr(solver, "_reduce"):
+        return solver._reduce(list(values), op)
+    return op(xp.stack(list(values)), axis=0)
+
+
+def _to_blocks(solver, value):
+    """One copy of ``value`` per block, committed to the block's device when it is sharded."""
+    devices = getattr(solver, "block_device", None)
+    if devices is None:
+        return (value,) * len(solver.blocks)
+    import jax
+    return tuple(jax.device_put(value, d) for d in devices)
+
+
 def _inner(solver, a, b):
-    value = sum(xp.sum(blk.interior(x) * blk.interior(y))
-                for blk, x, y in zip(solver.blocks, a, b))
-    return float(value)
+    parts = [xp.sum(blk.interior(x) * blk.interior(y)) for blk, x, y in zip(solver.blocks, a, b)]
+    return float(_reduce(solver, parts, xp.sum))
+
+
+def _inner_many(solver, basis, v):
+    """Dot products of ``v`` with every vector of ``basis`` in a single reduction."""
+    parts = [xp.stack([xp.sum(blk.interior(b[ib]) * blk.interior(vb)) for b in basis])
+             for ib, (blk, vb) in enumerate(zip(solver.blocks, v))]
+    return np.asarray(_reduce(solver, parts, xp.sum))
+
+
+def _max_abs(solver, a):
+    parts = [xp.max(xp.abs(blk.interior(x))) for blk, x in zip(solver.blocks, a)]
+    return float(_reduce(solver, parts, xp.max))
 
 
 def _norm(solver, a):
@@ -52,11 +83,6 @@ def _norm(solver, a):
 
 def _scale(a, value):
     return tuple(value * x for x in a)
-
-
-def _scale_rows(a, rows):
-    """Multiply every block array by per-variable factors of shape (nvar, 1, 1, 1)."""
-    return tuple(rows * x for x in a)
 
 
 def _mul(a, b):
@@ -73,7 +99,7 @@ class ImplicitIntegrator:
 
     def __init__(self, solver, *, scheme="bdf1", newton_rtol=1e-6, newton_atol=1e-10,
                  gmres_rtol=1e-3, gmres_maxiter=30, gmres_restart=20,
-                 max_newton=8, fd_epsilon=1e-7, max_backtracks=10):
+                 max_newton=8, fd_epsilon=1e-7, max_backtracks=10, preconditioner=None):
         if scheme not in ("bdf1", "bdf2"):
             raise ValueError("scheme must be 'bdf1' or 'bdf2'")
         if gmres_maxiter < 1 or gmres_restart < 1 or max_newton < 1:
@@ -87,6 +113,7 @@ class ImplicitIntegrator:
         self.gmres_maxiter, self.gmres_restart = gmres_maxiter, gmres_restart
         self.max_newton, self.fd_epsilon = max_newton, fd_epsilon
         self.max_backtracks = max_backtracks
+        self.preconditioner = preconditioner
         self.last_newton_iterations = 0
         self.last_residual_norm = np.inf
         self.last_gmres_iterations = 0
@@ -127,10 +154,11 @@ class ImplicitIntegrator:
         rho*E, and rms of any extra row (floored). Frozen over one Newton solve.
         """
         nv = Q[0].shape[0]
-        count = sum(int(np.prod(blk.n)) for blk in self.solver.blocks)
-        rms = np.array([np.sqrt(sum(float(np.sum(np.asarray(blk.interior(q[k])) ** 2))
-                                    for blk, q in zip(self.solver.blocks, Q)) / count)
-                        for k in range(nv)])
+        count = sum(int(np.prod(blk.interior(q[0]).shape)) for blk, q in zip(self.solver.blocks, Q))
+        sums = _reduce(self.solver,
+                       [xp.sum(blk.interior(q) ** 2, axis=(1, 2, 3))
+                        for blk, q in zip(self.solver.blocks, Q)], xp.sum)
+        rms = np.sqrt(np.asarray(sums) / count)
         scale = np.empty(nv)
         scale[0], scale[4] = rms[0], rms[4]
         scale[1:4] = np.sqrt(rms[0] * rms[4])
@@ -138,14 +166,25 @@ class ImplicitIntegrator:
         scale[5:] = np.maximum(rms[5:], floor)
         if not np.all(np.isfinite(scale)) or np.any(scale <= 0.0):
             scale = np.ones(nv)
-        return xp.asarray(scale)[:, None, None, None]
+        return _to_blocks(self.solver, xp.asarray(scale)[:, None, None, None])
 
-    def _gmres(self, matvec, b):
+    def _gmres(self, matvec, b, precond=None):
+        """Right-preconditioned restarted GMRES: solve ``A M^-1 z = b`` and return ``x = M^-1 z``.
+
+        ``precond`` maps a block-vector to a block-vector (``M^-1``); None means identity.
+        """
+        if precond is None:
+            return self._gmres_core(matvec, b)
+        z, total = self._gmres_core(lambda v: matvec(precond(v)), b)
+        return precond(z), total
+
+    def _gmres_core(self, matvec, b):
         """Restarted GMRES on tuples of block arrays.
 
         Inexact: when the relative tolerance is not reached within ``gmres_maxiter`` the best
         iterate is returned (``last_linear_converged`` is False); the Newton line search then
-        decides whether the step is usable.
+        decides whether the step is usable. Orthogonalisation is classical Gram-Schmidt with one
+        reorthogonalisation: two global reductions per Arnoldi step instead of one per basis vector.
         """
         solver = self.solver
         x = tuple(xp.zeros_like(v) for v in b)
@@ -165,9 +204,11 @@ class ImplicitIntegrator:
             e[0] = beta
             for j in range(min(self.gmres_restart, self.gmres_maxiter - total)):
                 v = _interior_vector(solver, matvec(basis[j]))
-                for i in range(j + 1):
-                    h[i, j] = _inner(solver, basis[i], v)
-                    v = _add(v, basis[i], -h[i, j])
+                for _ in range(2):
+                    coeffs = _inner_many(solver, basis, v)
+                    for b_i, c_i in zip(basis, coeffs):
+                        v = _add(v, b_i, -c_i)
+                    h[:j + 1, j] += coeffs
                 h[j + 1, j] = _norm(solver, v)
                 if h[j + 1, j] > 0.0:
                     basis.append(_scale(v, 1.0 / h[j + 1, j]))
@@ -218,7 +259,7 @@ class ImplicitIntegrator:
             raise ValueError("BDF2 does not support local (per-cell) time steps")
         dt = _per_block_dt(self.solver, dt)
         scale = self._row_scales(Qn)
-        eq = tuple(d / scale for d in dt)
+        eq = tuple(d / s for d, s in zip(dt, scale))
         snorm = lambda a: _norm(self.solver, _mul(eq, a))
         Q = Qn
         residual = self._residual(Q, Qn, dt, previous, time)
@@ -235,19 +276,21 @@ class ImplicitIntegrator:
                 break
 
             def matvec(y):
-                ymax = max(float(np.max(np.abs(np.asarray(blk.interior(a)))))
-                           for blk, a in zip(self.solver.blocks, y))
+                ymax = _max_abs(self.solver, y)
                 if ymax == 0.0:
                     return tuple(xp.zeros_like(a) for a in y)
-                qmax = max(max(float(np.max(np.abs(np.asarray(blk.interior(q / scale)))))
-                               for blk, q in zip(self.solver.blocks, Q)), 1.0)
+                qmax = max(_max_abs(self.solver, _mul(Q, tuple(1.0 / s for s in scale))), 1.0)
                 eps = self.fd_epsilon * qmax / ymax
-                perturbed = tuple(q + eps * s_y for q, s_y in zip(Q, _scale_rows(y, scale)))
+                perturbed = tuple(q + eps * s_y for q, s_y in zip(Q, _mul(y, scale)))
                 rp = self._residual(perturbed, Qn, dt, previous, time)
                 return _mul(eq, _scale(_add(rp, residual, -1.0), 1.0 / eps))
 
-            y, nlinear = self._gmres(matvec, _scale(_mul(eq, residual), -1.0))
-            delta = _scale_rows(y, scale)
+            apply = None
+            if self.preconditioner is not None:
+                self.preconditioner.build(Q, dt, time, scale)
+                apply = self.preconditioner.apply
+            y, nlinear = self._gmres(matvec, _scale(_mul(eq, residual), -1.0), apply)
+            delta = _mul(y, scale)
             self.last_gmres_iterations += nlinear
             accepted = False
             alpha = 1.0

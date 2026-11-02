@@ -14,6 +14,7 @@ import numpy as np
 from wmles.backend import asarray
 from wmles.implicit import ImplicitIntegrator
 from wmles.rans_case import build_rans_case, initial_state
+from wmles.precond import LineImplicit, PointJacobi
 from wmles.schemes import MUSCLHLLC
 from wmles import rans_post as rp
 
@@ -37,6 +38,9 @@ def main(argv=None):
                         help="one global pseudo-time step from the smallest cell (same as --no-local-dt)")
     parser.add_argument("--newton-rtol", type=float, default=1.0e-6)
     parser.add_argument("--gmres-maxiter", type=int, default=30)
+    parser.add_argument("--precond", choices=("none", "jacobi", "line", "line-all"), default="none",
+                        help="right preconditioner: point Jacobi, block-tridiagonal line solve along "
+                             "the stiffest axis (wall-normal), or along all varying axes")
     parser.add_argument("--profile", choices=("flatplate", "none"), default="flatplate")
     parser.add_argument("--load", default=None, help="restart from a state.npz")
     parser.add_argument("--out", default="out/flatplate_sa_implicit")
@@ -54,7 +58,9 @@ def main(argv=None):
     os.makedirs(args.out, exist_ok=True)
 
     integrator = ImplicitIntegrator(
-        solver, newton_rtol=args.newton_rtol, gmres_maxiter=args.gmres_maxiter)
+        solver, newton_rtol=args.newton_rtol, gmres_maxiter=args.gmres_maxiter,
+        preconditioner={"none": None, "jacobi": PointJacobi(solver), "line": LineImplicit(solver),
+                        "line-all": LineImplicit(solver, axis="all")}[args.precond])
 
     def report(step, state, row):
         print(f"{step:5d} CFL={row[1]:.3e} dt_min={row[2]:.3e} rhs_l2={row[3]:.3e} "

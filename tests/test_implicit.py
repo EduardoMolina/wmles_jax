@@ -3,8 +3,13 @@ import unittest
 
 import numpy as np
 
+from wmles import implicit
 from wmles.gas import Gas
 from wmles.implicit import ImplicitIntegrator
+from wmles import precond
+from wmles.precond import LineImplicit, PointJacobi
+from wmles.rans_case import build_rans_case, initial_state
+from wmles.schemes import MUSCLHLLC
 
 
 class _Block:
@@ -135,6 +140,100 @@ class ImplicitFormulationTests(unittest.TestCase):
         self.assertTrue(all(b >= a - 1e-15 for a, b in zip(cfls, cfls[1:])))
         self.assertLessEqual(max(cfls), 0.5)
         self.assertGreater(cfls[-1], cfls[0])
+
+    def test_reductions_go_through_solver_reduce_and_match_local_sum(self):
+        class Sharded(_LinearSolver):
+            calls = 0
+
+            def _reduce(self, values, op):
+                Sharded.calls += 1
+                return op(np.stack(values), axis=0)
+
+        rng = np.random.default_rng(0)
+        a, b = (rng.normal(size=(5, 3, 3, 3)),), (rng.normal(size=(5, 3, 3, 3)),)
+        plain, sharded = _LinearSolver(), Sharded()
+        self.assertAlmostEqual(implicit._inner(plain, a, b), implicit._inner(sharded, a, b))
+        many = implicit._inner_many(sharded, [a, b], a)
+        np.testing.assert_allclose(many, [implicit._inner(plain, a, a), implicit._inner(plain, b, a)])
+        self.assertGreater(Sharded.calls, 0)
+        x = np.zeros((5, 3, 3, 3))
+        x[2, 1, 1, 1] = -7.0
+        self.assertEqual(implicit._max_abs(sharded, (x,)), 7.0)
+
+    def test_gmres_right_preconditioner_reduces_iterations(self):
+        solver = _LinearSolver()
+        diag = np.zeros((5, 3, 3, 3))
+        diag[:, 1:-1, 1:-1, 1:-1] = np.logspace(0, 4, 5)[:, None, None, None]
+        matvec = lambda v: (diag * v[0],)
+        b = (np.zeros((5, 3, 3, 3)),)
+        b[0][:, 1, 1, 1] = 1.0
+        inv = np.where(diag > 0.0, 1.0 / np.where(diag > 0.0, diag, 1.0), 0.0)
+        integrator = ImplicitIntegrator(solver, gmres_rtol=1e-10, gmres_maxiter=50)
+        x0, n0 = integrator._gmres(matvec, b)
+        x1, n1 = integrator._gmres(matvec, b, lambda v: (inv * v[0],))
+        for x in (x0, x1):
+            np.testing.assert_allclose(diag * x[0], b[0], atol=1e-8)
+        self.assertLess(n1, n0)
+        self.assertEqual(n1, 1)
+
+    def test_point_jacobi_is_identity_at_zero_dt_and_contracts_with_dt(self):
+        _, solver, props = build_rans_case(
+            "tests/data/2DZP/flatplate_clust2_3levelsdown_69x49", mach=0.2, reynolds=5e6,
+            scheme=MUSCLHLLC())
+        Q = initial_state(solver, props, profile="flatplate")
+        pc = PointJacobi(solver)
+        tiny = implicit._per_block_dt(solver, 1e-30)
+        pc.build(Q, tiny)
+        for m in pc.inverse:
+            np.testing.assert_allclose(np.asarray(m), 1.0)
+        big = implicit._per_block_dt(solver, 1e-4)
+        pc.build(Q, big)
+        for blk, m in zip(solver.blocks, pc.inverse):
+            inner = np.asarray(blk.interior(m))
+            self.assertTrue(np.all(np.isfinite(inner)))
+            self.assertTrue(np.all((inner > 0.0) & (inner < 1.0)))
+
+
+    def test_block_thomas_matches_dense_solve(self):
+        rng = np.random.default_rng(3)
+        n, nv, lines = 6, 3, (2, 2)
+        shape = (n,) + lines + (nv, nv)
+        lower, upper = rng.normal(size=shape) * 0.3, rng.normal(size=shape) * 0.3
+        diag = rng.normal(size=shape) * 0.2 + 3.0 * np.eye(nv)
+        lower[0] = 0.0
+        upper[-1] = 0.0
+        rhs = rng.normal(size=(n,) + lines + (nv,))
+        x = np.asarray(precond._block_thomas_solve(precond._block_thomas_factor(lower, diag, upper), rhs))
+        for a in range(lines[0]):
+            for b in range(lines[1]):
+                dense = np.zeros((n * nv, n * nv))
+                for i in range(n):
+                    dense[i * nv:(i + 1) * nv, i * nv:(i + 1) * nv] = diag[i, a, b]
+                    if i > 0:
+                        dense[i * nv:(i + 1) * nv, (i - 1) * nv:i * nv] = lower[i, a, b]
+                    if i < n - 1:
+                        dense[i * nv:(i + 1) * nv, (i + 1) * nv:(i + 2) * nv] = upper[i, a, b]
+                ref = np.linalg.solve(dense, rhs[:, a, b].reshape(-1)).reshape(n, nv)
+                np.testing.assert_allclose(x[:, a, b], ref, rtol=1e-9, atol=1e-10)
+
+    def test_line_implicit_identity_at_zero_dt_and_finite_at_large_dt(self):
+        _, solver, props = build_rans_case(
+            "tests/data/2DZP/flatplate_clust2_3levelsdown_69x49", mach=0.2, reynolds=5e6,
+            scheme=MUSCLHLLC())
+        Q = initial_state(solver, props, profile="flatplate")
+        rng = np.random.default_rng(0)
+        v = implicit._interior_vector(solver, tuple(rng.normal(size=q.shape) for q in Q))
+        pc = LineImplicit(solver, axis=(2, 1))
+        pc.build(Q, implicit._per_block_dt(solver, 1e-30))
+        for x, y in zip(pc.apply(v), v):
+            np.testing.assert_allclose(np.asarray(x), np.asarray(y), atol=1e-9)
+        pc.build(Q, implicit._per_block_dt(solver, 1e-4))
+        out = pc.apply(v)
+        self.assertEqual(pc.axes[1], (2, 1))
+        for blk, x in zip(solver.blocks, out):
+            self.assertTrue(np.all(np.isfinite(np.asarray(blk.interior(x)))))
+        with self.assertRaises(ValueError):
+            LineImplicit(solver, axis=3)
 
 
 if __name__ == "__main__":
