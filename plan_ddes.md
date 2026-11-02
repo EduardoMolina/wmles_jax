@@ -95,7 +95,8 @@ I read the solver, SGS, viscous, BC, wall-model, scheme, mesh, backend and shard
 - Time integration: backward Euler and BDF2 for time-accurate steps. Steady RANS uses backward-Euler pseudo-time continuation with **local time stepping** (below).
 - Where the speedup comes from: wall-normal stiffness in wall-resolved cells. Implicit time steps are limited only by the convective CFL in the LES region, which could be about 100× larger than today's dt of 1e-7 s. In isotropic LES regions the benefit is smaller.
 - First implementation: `wmles/implicit.py` provides backward-Euler and fixed-step BDF2 residuals, finite-difference Newton-GMRES, and a geometric CFL-ramped backward-Euler pseudo-time driver. `examples/flatplate_sa_implicit.py` targets the wall-resolved 2DZP SA case.
-- Current limitation: the prototype is unpreconditioned and uses **one global Δt** per iteration (`solver.max_dt`, the minimum over all cells scaled to the requested CFL). On the stretched 2DZP grid this is set by the smallest wall-normal cell, so it wastes most of the implicit advantage. The explicit steady driver (`Solver.step_local`) already uses per-cell Δt.
+- Status: B0a-LTS implemented (per-cell Δt, SER ramp, half-CFL retry, variable and Δt row scaling of the Newton/GMRES system). 2DZP, CFL 1 → ~7 in 150 steps, residual 1.6e10 → 1.1e9; GMRES iterations per step grow from ~40 to ~200 as CFL rises. Remaining: B3 preconditioner, and the C_f cross-check against explicit `step_local` at convergence.
+- Row scaling matters: without it the ρν̃ row was ignored by the norm and FD step, and global-Δt GMRES needed 53 iterations at CFL 1 (now 8). Local Δt additionally needs the `dt/scale` left scaling (61 vs failure).
 
 #### B0a-LTS. Local (pseudo-)time stepping for the implicit steady solver
 Steady-state only (not time accurate); the unsteady/DDES path in B0b keeps a uniform physical Δt.

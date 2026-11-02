@@ -2,9 +2,9 @@
 
     python -m examples.flatplate_sa_implicit --steps 20 --out out/flatplate_sa_implicit
 
-The current matrix-free Newton-GMRES implementation has no preconditioner yet; start
-with a conservative CFL and ramp gradually. Pseudo-time dt is recomputed from the
-current state's explicit stability limit at each step.
+The current matrix-free Newton-GMRES implementation has no preconditioner yet. By default
+each cell uses its own pseudo-time step (local time stepping, steady state only) and the CFL
+follows an SER ramp; use --global-dt for one step set by the smallest cell.
 """
 import argparse
 import os
@@ -26,9 +26,15 @@ def main(argv=None):
     parser.add_argument("--mach", type=float, default=0.2)
     parser.add_argument("--reynolds", type=float, default=5.0e6)
     parser.add_argument("--steps", type=int, default=10)
-    parser.add_argument("--cfl", type=float, default=0.1, help="initial pseudo-time CFL")
-    parser.add_argument("--cfl-growth", type=float, default=1.25)
-    parser.add_argument("--max-cfl", type=float, default=10.0)
+    parser.add_argument("--cfl", type=float, default=1.0, help="initial pseudo-time CFL")
+    parser.add_argument("--cfl-growth", type=float, default=1.5, help="max CFL growth per step")
+    parser.add_argument("--max-cfl", type=float, default=1.0e3)
+    parser.add_argument("--ramp", choices=("ser", "geometric"), default="ser")
+    parser.add_argument("--ser-exponent", type=float, default=1.0)
+    parser.add_argument("--local-dt", action=argparse.BooleanOptionalAction, default=True,
+                        help="per-cell pseudo-time step (default) or one global step")
+    parser.add_argument("--global-dt", dest="local_dt", action="store_false",
+                        help="one global pseudo-time step from the smallest cell (same as --no-local-dt)")
     parser.add_argument("--newton-rtol", type=float, default=1.0e-6)
     parser.add_argument("--gmres-maxiter", type=int, default=30)
     parser.add_argument("--profile", choices=("flatplate", "none"), default="flatplate")
@@ -51,15 +57,15 @@ def main(argv=None):
         solver, newton_rtol=args.newton_rtol, gmres_maxiter=args.gmres_maxiter)
 
     def report(step, state, row):
-        print(f"{step:5d} CFL={row[1]:.3e} dt={row[2]:.3e} rhs_l2={row[3]:.3e} "
+        print(f"{step:5d} CFL={row[1]:.3e} dt_min={row[2]:.3e} rhs_l2={row[3]:.3e} "
               f"Newton={integrator.last_newton_iterations} "
               f"GMRES={integrator.last_gmres_iterations}", flush=True)
 #        np.savez(os.path.join(args.out, "state.npz"),
 #                 **{f"q{i}": np.asarray(q) for i, q in enumerate(state)})
 
     Q, _ = integrator.run_steady_cfl(
-        Q, args.steps, args.cfl, growth=args.cfl_growth,
-        max_cfl=args.max_cfl, callback=report)
+        Q, args.steps, args.cfl, growth=args.cfl_growth, max_cfl=args.max_cfl,
+        local=args.local_dt, ramp=args.ramp, ser_exponent=args.ser_exponent, callback=report)
     np.savez(os.path.join(args.out, "state.npz"),
              **{f"q{i}": np.asarray(q) for i, q in enumerate(Q)})
 

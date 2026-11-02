@@ -118,20 +118,24 @@ first step still compiles these kernels for the selected device and grid shapes.
 ## Implicit steady SA prototype
 
 `wmles/implicit.py` provides a backward-Euler residual, fixed-step BDF2 residual,
-finite-difference Jacobian-vector products, restarted GMRES, and a geometric
-pseudo-time CFL ramp that derives each `dt` from the solver's current explicit
-stability limit. The current Newton-GMRES implementation is an unpreconditioned
+finite-difference Jacobian-vector products, restarted GMRES, and a pseudo-time
+CFL ramp (SER on the residual, or geometric) that derives `dt` from the solver's
+explicit stability limit. By default `dt` is a per-cell (local) field frozen within
+each Newton solve; `--global-dt` uses a single minimum `dt`. Newton/GMRES work on a
+variable-scaled, dt-row-scaled system, and a failed step is retried at half CFL.
+The current Newton-GMRES implementation is an unpreconditioned
 prototype; it is intended to establish and validate the steady RANS formulation,
 not yet to replace the explicit driver for production-scale runs. The target case
 is the wall-resolved 2DZP flat plate:
 
 ```bash
 python -m examples.flatplate_sa_implicit --steps 10
-python -m examples.flatplate_sa_implicit --steps 20 --cfl 0.1 --max-cfl 10
+python -m examples.flatplate_sa_implicit --steps 150 --cfl 1 --max-cfl 200
+python -m examples.flatplate_sa_implicit --steps 20 --cfl 1 --global-dt
 ```
 
-Use a small initial CFL and a gradual ramp;
-the example defaults to the analytic flat-plate initial condition used by the
+Linear iterations grow with CFL (unpreconditioned; see B3 in `plan_ddes.md`).
+The example defaults to the analytic flat-plate initial condition used by the
 explicit SA validation.
 
 ## Re_tau = 5200 channel validation case
