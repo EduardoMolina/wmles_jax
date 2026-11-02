@@ -92,10 +92,28 @@ I read the solver, SGS, viscous, BC, wall-model, scheme, mesh, backend and shard
 
 ### B0a. Formulation for Steady-State
 - Solve `R(Q) = (Q − Qⁿ)/Δt − rhs(Q) = 0`, matching the per-volume residual the solver already computes.
-- Time integration: backward Euler and BDF2, with a pseudo-time (CFL-ramped) continuation for steady RANS.
+- Time integration: backward Euler and BDF2 for time-accurate steps. Steady RANS uses backward-Euler pseudo-time continuation with **local time stepping** (below).
 - Where the speedup comes from: wall-normal stiffness in wall-resolved cells. Implicit time steps are limited only by the convective CFL in the LES region, which could be about 100× larger than today's dt of 1e-7 s. In isotropic LES regions the benefit is smaller.
 - First implementation: `wmles/implicit.py` provides backward-Euler and fixed-step BDF2 residuals, finite-difference Newton-GMRES, and a geometric CFL-ramped backward-Euler pseudo-time driver. `examples/flatplate_sa_implicit.py` targets the wall-resolved 2DZP SA case.
-- This is an unpreconditioned prototype; verify with small steps first. BDF2 requires a prior state, and the steady ramp currently uses backward Euler.
+- Current limitation: the prototype is unpreconditioned and uses **one global Δt** per iteration (`solver.max_dt`, the minimum over all cells scaled to the requested CFL). On the stretched 2DZP grid this is set by the smallest wall-normal cell, so it wastes most of the implicit advantage. The explicit steady driver (`Solver.step_local`) already uses per-cell Δt.
+
+#### B0a-LTS. Local (pseudo-)time stepping for the implicit steady solver
+Steady-state only (not time accurate); the unsteady/DDES path in B0b keeps a uniform physical Δt.
+- **Residual.** Replace the scalar Δt by a per-cell field `Δtᵢ = CFLₚₛ · Δtᵢ^explicit(1.0)` and solve
+  `R(Q) = (Q − Qⁿ)/Δtᵢ − rhs(Q) = 0`. `Δtᵢ` is an array per block (ghost-padded, same layout as `Solver.local_dt`), so the residual is `(q − qⁿ) / dt[None] − rhs`, and the pseudo-time diagonal is `V/Δtᵢ` in B3.
+- **Δt field.** Reuse `Solver.local_dt(Q)` (it already includes SA diffusion stiffness through ν + ν̃). Because `solver.cfl` is baked in, rescale by `CFLₚₛ / solver.cfl`. Add an optional per-cell cap `Δtᵢ ≤ Δt_max` for robustness.
+- **Freezing.** Compute `Δtᵢ` once per Newton solve (from `Qⁿ`) and keep it fixed during the Newton and Krylov iterations. Otherwise J·v would differentiate through `Δt(Q)` and the FD operator would be inconsistent with the residual.
+- **API.** `ImplicitIntegrator.advance(Qn, dt, ...)` accepts `dt` as a scalar or a per-block tuple of arrays (as `Solver._per_block` does). Add `run_steady_cfl(..., local=True)` as the default for steady runs, and keep `local=False` (global Δt) for comparison and tests. The example gets `--local-dt/--global-dt` (default local).
+- **CFL ramp.** Ramp `CFLₚₛ` by SER on the residual: `CFLₚₛ ← min(CFL_max, CFLₚₛ · (‖R⁰‖/‖Rⁿ‖)^p)`, with the geometric ramp as fallback. Start at 1–10 in the first iterations and grow to 10³–10⁶ as the residual drops. Reduce it (and restart the step from `Qⁿ`) when the Newton line search fails.
+- **Consistency checks.**
+  - With a uniform Δt field, the local-dt residual and the step must equal the scalar-Δt result to round-off (mirrors `test_local_dt_step_equals_global_dt_step_when_dt_is_uniform`).
+  - As `CFLₚₛ → 0`, one implicit step should agree with one explicit `advance_local` step.
+  - The converged steady state must not depend on the Δt field. Compare 2DZP C_f with the global-Δt and the explicit-local results.
+- **Caveats.**
+  - Local Δt makes the transient meaningless (not time accurate), so BDF2 and the unsteady path never use it.
+  - With very large Δtᵢ the diagonal `V/Δtᵢ` vanishes and the system tends to the steady Jacobian, so the preconditioner (B3) is what keeps GMRES converging. Expect the iteration count to grow with CFLₚₛ.
+  - The cell-to-cell Δt jumps across block interfaces are harmless, because ghost cells are exchanged as state and Δt is not communicated.
+  - In sharded runs `Δtᵢ` stays per block, so no extra reduction is needed (a global-Δt run needs one `min` reduction).
 
 ### B0b. Formulation for Unsteady
 - Dual-Time Stepping for DDES.
@@ -105,7 +123,7 @@ I read the solver, SGS, viscous, BC, wall-model, scheme, mesh, backend and shard
   - It works unchanged with both `Solver.rhs` and `DistributedSolver.rhs`, and with the existing halo and BC machinery.
   - It has no dependence on JAX AD through non-smooth parts.
 - Later: an exact **`jax.jvp`** per block kernel, with frozen limiter, sensor and wall-model derivatives (`stop_gradient`) to avoid noise from non-smooth pieces. For the wall-model solve, add a `custom_jvp` using the implicit-function theorem rather than differentiating through `fori_loop`.
-- API: `ImplicitIntegrator(solver, scheme="bdf1"|"bdf2", ...)` with `.advance(Q, dt, time)`, so the existing drivers don't change.
+- API: `ImplicitIntegrator(solver, scheme="bdf1"|"bdf2", ...)` with `.advance(Q, dt, time)`, so the existing drivers don't change. `dt` is a scalar or a per-block tuple of per-cell arrays (local pseudo-time, B0a-LTS); the field is frozen within one Newton solve.
 
 ### B2. Krylov solver (`wmles/krylov.py`)
 - Pytree GMRES(m), restarted, with vectors as tuples of per-block arrays.
@@ -116,7 +134,7 @@ I read the solver, SGS, viscous, BC, wall-model, scheme, mesh, backend and shard
 
 ### B3. Preconditioner (the real work)
 Build the preconditioner from a **first-order upwind Jacobian**, not the central or KEP scheme.
-1. **Point-block Jacobi.** The diagonal block is `V/Δt + Σ|A_f|`, obtained via `jax.jacfwd` of a Rusanov or HLLC-type flux, plus an analytic or `jacfwd` SA source Jacobian. It is local to each block, so there are no halo needs. Start here for correctness.
+1. **Point-block Jacobi.** The diagonal block is `V/Δtᵢ + Σ|A_f|` (`Δtᵢ` is the per-cell local pseudo-time step in steady runs), obtained via `jax.jacfwd` of a Rusanov or HLLC-type flux, plus an analytic or `jacfwd` SA source Jacobian. It is local to each block, so there are no halo needs. Start here for correctness.
 2. **Line-implicit block-tridiagonal solve** along the wall-normal axis, using `lax.scan` or an associative scan, with `vmap` over lines. This is what actually handles y+ ≈ 1 stretching.
    - Treat block interfaces as additive Schwarz (Jacobi coupling), which parallelises naturally over METIS blocks.
    - The wall-normal axis comes from each block's wall-BC face.
@@ -124,13 +142,14 @@ Build the preconditioner from a **first-order upwind Jacobian**, not the central
 
 ### B4. Robustness
 - Positivity-preserving Newton update: cap relative changes in ρ and p, and use SA-neg for ν̃.
-- Pseudo-time CFL ramp (SER) and backtracking on `‖R‖`.
+- Pseudo-time CFL ramp (SER) with local Δtᵢ (B0a-LTS) and backtracking on `‖R‖`. On a failed line search, halve `CFLₚₛ`, recompute `Δtᵢ` from `Qⁿ` and retry the step.
 - Constraints like `ConstantMassFlux` stay as post-step operations at first.
 - Make the wall-model `utau` Newton safeguards differentiable-friendly.
 
 ### B5. Validation and performance
 - Linear check: matrix-free J·v against a dense `jacfwd` on a tiny grid.
 - Check that backward Euler with a tiny Δt reproduces explicit RK3.
+- Local-Δt checks (B0a-LTS): a uniform per-cell Δt field equals the scalar-Δt step; the converged 2DZP C_f is independent of local versus global Δt and matches the explicit `step_local` result; report iterations to a 4-order residual drop for global versus local Δt.
 - Check that a steady SA flat plate or NACA0012 converges by about 4 orders in residual.
 - `DistributedSolver` equivalence: the implicit step on 1 device versus 8 virtual CPU devices (extend `tests/test_sharding.py`).
 - Performance gate on L1: wall-time per physical time versus explicit, with the compile-time cost reported separately. Include GMRES iterations per Newton step and communication fraction on 8 GPUs.
@@ -142,7 +161,7 @@ Build the preconditioner from a **first-order upwind Jacobian**, not the central
 2. A2 and A3: SA-RANS on one device, then flat plate and NACA0012.
 3. DDES (`d̃`, Δ_max, shielding), then channel DDES.
 4. 6-variable sharding, restart and VTU, then multi-block and sharding regression.
-5. B1 and B2: FD matrix-free GMRES with a point-block preconditioner on the explicit-equivalent test.
+5. B1 and B2: FD matrix-free GMRES with a point-block preconditioner on the explicit-equivalent test. Add local pseudo-time stepping (B0a-LTS) to the steady 2DZP driver before tuning the preconditioner.
 6. B3 line-implicit preconditioner, B4 robustness, and steady SA convergence.
 7. Dual-time DDES on OAT15a, plus the exact `jvp` variant if FD proves noisy or slow.
 
