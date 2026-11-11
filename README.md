@@ -132,11 +132,12 @@ is the wall-resolved 2DZP flat plate:
 python -m examples.flatplate_sa_implicit --steps 10
 python -m examples.flatplate_sa_implicit --steps 150 --cfl 1 --max-cfl 200
 python -m examples.flatplate_sa_implicit --steps 20 --cfl 1 --global-dt
-python -m examples.flatplate_sa_implicit --steps 50 --cfl 10 --global-dt --precond line
+python -m examples.flatplate_sa_implicit --steps 150 --cfl 1 --max-cfl 200   # local dt, line preconditioner
 ```
 
-Linear iterations grow with CFL. `--precond line` adds a block line-implicit preconditioner
-(`wmles/precond.py`); it helps clearly with global dt, and local dt is still being tuned (see B3 in `plan_ddes.md`).
+Linear iterations grow with CFL. The example defaults to the block line-implicit preconditioner (`--precond line`,
+`wmles/precond.py`), a loose Newton tolerance (`--newton-rtol 1e-2`) and a finite-difference
+step `--fd-epsilon 1e-4` (smaller steps are dominated by round-off; see B3 in `plan_ddes.md`).
 The example defaults to the analytic flat-plate initial condition used by the
 explicit SA validation.
 

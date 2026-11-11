@@ -99,7 +99,7 @@ class ImplicitIntegrator:
 
     def __init__(self, solver, *, scheme="bdf1", newton_rtol=1e-6, newton_atol=1e-10,
                  gmres_rtol=1e-3, gmres_maxiter=30, gmres_restart=20,
-                 max_newton=8, fd_epsilon=1e-7, max_backtracks=10, preconditioner=None):
+                 max_newton=8, fd_epsilon=1e-4, max_backtracks=10, preconditioner=None):
         if scheme not in ("bdf1", "bdf2"):
             raise ValueError("scheme must be 'bdf1' or 'bdf2'")
         if gmres_maxiter < 1 or gmres_restart < 1 or max_newton < 1:

@@ -176,6 +176,23 @@ def _reflect_nodes(X, blk, axis, side):
         X[sl(4, axis, slice(b + 1, b + 1 + ng))] = g
 
 
+def _patch_corner_volumes(b, vol):
+    """Ghost-corner cells at a point shared by three blocks have no diagonal neighbour and can come out
+    degenerate; they are never used by the flux stencils, so give them their mirrored interior volume."""
+    ng = b.ng
+    for a, c in ((0, 1), (0, 2), (1, 2)):
+        for sa, sc in product((0, 1), repeat=2):
+            ghost, mirror = [slice(None)] * 3, [slice(None)] * 3
+            for ax, s in ((a, sa), (c, sc)):
+                if s == 0:
+                    ghost[ax], mirror[ax] = slice(0, ng), slice(2 * ng - 1, ng - 1, -1)
+                else:
+                    ghost[ax], mirror[ax] = slice(ng + b.n[ax], b.N[ax]), slice(ng + b.n[ax] - 1, b.n[ax] - 1, -1)
+            ghost, mirror = tuple(ghost), tuple(mirror)
+            vol[ghost] = np.where(vol[ghost] <= 0, vol[mirror], vol[ghost])
+    return vol
+
+
 def _match_orientation(A, fa, B, fb, shift):
     """Find axis mapping/flips such that B's interface node plane (+shift) equals A's."""
     aA, sA = fa
@@ -243,6 +260,8 @@ class Mesh:
         geoms = []
         for b in self.blocks:
             vol, xc, S, xf = compute_geometry(b.X)
+            if vol.min() <= 0:
+                vol = _patch_corner_volumes(b, vol)
             if vol.min() <= 0:
                 raise ValueError(f"block {b.name}: non-positive cell volume (left-handed or folded grid)")
             b.geom = Geom(asarray(vol), asarray(xc),

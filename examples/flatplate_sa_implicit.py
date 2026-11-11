@@ -36,9 +36,12 @@ def main(argv=None):
                         help="per-cell pseudo-time step (default) or one global step")
     parser.add_argument("--global-dt", dest="local_dt", action="store_false",
                         help="one global pseudo-time step from the smallest cell (same as --no-local-dt)")
-    parser.add_argument("--newton-rtol", type=float, default=1.0e-6)
+    parser.add_argument("--newton-rtol", type=float, default=1.0e-2,
+                        help="pseudo-time steps need only a loose Newton solve")
     parser.add_argument("--gmres-maxiter", type=int, default=30)
-    parser.add_argument("--precond", choices=("none", "jacobi", "line", "line-all"), default="none",
+    parser.add_argument("--fd-epsilon", type=float, default=1e-4,
+                        help="relative finite-difference step of J*v; round-off dominates below ~1e-5")
+    parser.add_argument("--precond", choices=("none", "jacobi", "line", "line-all"), default="line",
                         help="right preconditioner: point Jacobi, block-tridiagonal line solve along "
                              "the stiffest axis (wall-normal), or along all varying axes")
     parser.add_argument("--profile", choices=("flatplate", "none"), default="flatplate")
@@ -58,7 +61,7 @@ def main(argv=None):
     os.makedirs(args.out, exist_ok=True)
 
     integrator = ImplicitIntegrator(
-        solver, newton_rtol=args.newton_rtol, gmres_maxiter=args.gmres_maxiter,
+        solver, newton_rtol=args.newton_rtol, gmres_maxiter=args.gmres_maxiter, fd_epsilon=args.fd_epsilon,
         preconditioner={"none": None, "jacobi": PointJacobi(solver), "line": LineImplicit(solver),
                         "line-all": LineImplicit(solver, axis="all")}[args.precond])
 
